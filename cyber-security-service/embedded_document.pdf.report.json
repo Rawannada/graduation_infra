@@ -1,0 +1,45 @@
+{
+    "file_id": null,
+    "file_name": "embedded_document.pdf",
+    "file_hash": "ff0d2be0037a1d24f8e89f907a2f108a0b4da1e1b528c46f2f361e498036057d",
+    "created_at": "2025-12-19T07:21:01.750387Z",
+    "javascript_found": false,
+    "embedded_files": 1,
+    "suspicious_objects": 1,
+    "triggers": [
+        {
+            "type": "SinglePageDocument",
+            "page": 0
+        },
+        {
+            "type": "EmbeddedFiles",
+            "count": 1
+        }
+    ],
+    "metadata": {
+        "/Title": "Embedded File PDF"
+    },
+    "num_pages": 1,
+    "encrypted": false,
+    "objstm_count": 0,
+    "risk_level": 2,
+    "risk_label": "Medium",
+    "profile": "attachment_heavy",
+    "engine_version": "pdf-cyber-scanner-v2",
+    "security_block": false,
+    "security_decision": "review",
+    "trigger_stats": {
+        "SinglePageDocument": 1,
+        "EmbeddedFiles": 1
+    },
+    "total_triggers": 2,
+    "flags": {
+        "has_javascript": false,
+        "has_embedded_files": true,
+        "has_forms": false,
+        "has_external_links": false,
+        "is_single_page": true,
+        "has_objstm": false
+    },
+    "explanation": "1 embedded file(s) detected."
+}

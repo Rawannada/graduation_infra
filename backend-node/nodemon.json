@@ -1,0 +1,12 @@
+{
+    "watch": ["dist"],
+    "ext": "js,json",
+    "ignore": [
+      "uploads/*",
+      "src/*",
+      "node_modules/*",
+      "*.test.ts",
+      ".git"
+    ],
+    "delay": "2500"
+  }

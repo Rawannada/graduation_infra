@@ -1,0 +1,47 @@
+version: '3.8'
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb_container
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - graduation-network
+
+  cyber-service:
+    build: ./cyber-security-service
+    container_name: cyber_service_container
+    ports:
+      - "5000:5000"
+    volumes:
+      # بنربط الفولدر بمكان اسمه uploads بره الـ app عشان الكود يلاقيه
+      - ./backend-node/uploads:/app/dist/uploads
+      - ./backend-node/uploads:/app/uploads
+    networks:
+      - graduation-network
+
+  backend-node:
+    build: ./backend-node
+    container_name: node_backend_container
+    ports:
+      - "3000:3000"
+    volumes:
+      # السر هنا: الكود بتاعك شغال من dist فبيدور على uploads هناك
+      - ./backend-node/uploads:/app/dist/uploads
+      - ./backend-node/uploads:/app/uploads
+    env_file:
+      - ./backend-node/.env
+    networks:
+      - graduation-network
+    depends_on:
+      - mongodb
+      - cyber-service
+
+networks:
+  graduation-network:
+    driver: bridge
+
+volumes:
+  mongo_data:
