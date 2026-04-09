@@ -19,7 +19,7 @@ export const signUpSchema = {
   body: signInSchema.body
     .extend({
       cPassword: z.string(),
-      role: z.enum([RoleTypes.admin, RoleTypes.user]).optional(),
+      userName: z.string().min(2).max(50).trim(),
     })
     .required()
     .superRefine((data, ctx) => {
@@ -64,13 +64,13 @@ export const forgetPasswordSchema = {
 }
 
 export const resetPasswordSchema = {
-  body:z.strictObject({
+  body: z.strictObject({
     email: z.email(),
     password: z.string().regex(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/),
     cPassword: z.string()
-  }).required().refine((data) =>{
+  }).required().refine((data) => {
     return data.password === data.cPassword
-  },{
+  }, {
     error: "Password Not match",
     path: ["cPassword"]
   })

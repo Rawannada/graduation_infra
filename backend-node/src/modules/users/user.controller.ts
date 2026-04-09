@@ -10,7 +10,7 @@ const userRouter = Router()
 
 userRouter.post('/signUp', validation(UV.signUpSchema), US.signUp)
 userRouter.patch('/confirmEmail', validation(UV.confirmEmailSchema), US.confirmEmail)
-userRouter.post('/updateProfile', Authentication(), MulterLocal({customExtensions: allowedExtensions.image}).single('image'),validation(UV.updateProfileSchema), US.updateProfile)
+//userRouter.post('/updateProfile', Authentication(), MulterLocal({customExtensions: allowedExtensions.image}).single('image'),validation(UV.updateProfileSchema), US.updateProfile)
 userRouter.post('/signIn', validation(UV.signInSchema), US.signIn)
 userRouter.get('/profile', Authentication(), US.getProfile)
 userRouter.post('/logout', Authentication(), validation(UV.logoutSchema), US.logOut)

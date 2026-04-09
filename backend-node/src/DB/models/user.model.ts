@@ -11,7 +11,7 @@ export enum RoleTypes {
 }
 
 export interface IUser {
-  fullName?: string,
+  userName: string,
   email: string,
   password: string,
   role?: RoleTypes,
@@ -25,20 +25,20 @@ export interface IUser {
 
 const userSchema = new mongoose.Schema<IUser>(
   {
-  email: {type: String, required: true, unique: true, trim: true},
-  fullName: {type: String},
-  password: {type: String, required: true},
-  role: {type: String, enum: RoleTypes, default: RoleTypes.user},
-  OTP: {type: String},
-  confirmed: {tyoe: Boolean},
-  changeCredentials: {type: Date},
-  profilePicture: {type: String}
+    email: { type: String, required: true, unique: true, trim: true },
+    userName: { type: String },
+    password: { type: String, required: true },
+    role: { type: String, enum: RoleTypes, default: RoleTypes.user },
+    OTP: { type: String },
+    confirmed: { tyoe: Boolean },
+    changeCredentials: { type: Date },
+    profilePicture: { type: String }
   },
   {
-  timestamps: true,
-  toObject: {virtuals: true},
-  toJSON: {virtuals: true}
-})
+    timestamps: true,
+    toObject: { virtuals: true },
+    toJSON: { virtuals: true }
+  })
 
 // userSchema.virtual("fullName").set(function(value) {
 //   const [fName, lName] = value.split(" ")
@@ -47,6 +47,6 @@ const userSchema = new mongoose.Schema<IUser>(
 //   return this.fName + " " + this.lName
 // })
 
-const userModel = mongoose.models.User || mongoose.model<IUser> ('User', userSchema)
+const userModel = mongoose.models.User || mongoose.model<IUser>('User', userSchema)
 
 export default userModel

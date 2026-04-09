@@ -2,23 +2,20 @@ FROM node:20
 
 WORKDIR /app
 
-# نسخ ملفات الوصف
+# 1. نسخ ملفات الوصف وتثبيت المكتبات
 COPY package*.json ./
-
-# تثبيت المكتبات
 RUN npm install
 
-# تثبيت الـ typescript عشان نحول الكود يدوي
+# 2. تثبيت typescript بشكل عالمي عشان نستخدم أمر tsc
 RUN npm install -g typescript
 
-# نسخ كود المشروع بالكامل
+# 3. نسخ باقي الكود (بما فيهم الـ tsconfig.json)
 COPY . .
 
-# تحويل الكود لـ JavaScript (أمر يدوي بدل npm run build)
-RUN tsc
-
-# البورت
+# 4. البورت
 EXPOSE 3000
 
-# أمر التشغيل اللي جربتيه ونفع معاكي
-CMD ["node", "dist/index.js"]
+# 5. التعديل السحري:
+# بنقول للكونتينر: أول ما تفتح، "ابني" الكود الأول وبعدين "شغله"
+# ده بيضمن إن الـ dist يتكريه بعد ما الـ Volumes تتركب
+CMD ["sh", "-c", "tsc && node dist/index.js"]

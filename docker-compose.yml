@@ -1,5 +1,7 @@
 version: '3.8'
+
 services:
+  # 1. قاعدة البيانات (MongoDB)
   mongodb:
     image: mongo:latest
     container_name: mongodb_container
@@ -8,39 +10,65 @@ services:
     volumes:
       - mongo_data:/data/db
     networks:
-      - graduation-network
+      - deepguard-network
 
+  # 2. خدمة فحص الملفات (Cyber Service - Python/Flask)
   cyber-service:
-    build: ./cyber-security-service
+    build: 
+      context: ./cyber-security-service
     container_name: cyber_service_container
     ports:
       - "5000:5000"
     volumes:
-      # بنربط الفولدر بمكان اسمه uploads بره الـ app عشان الكود يلاقيه
-      - ./backend-node/uploads:/app/dist/uploads
       - ./backend-node/uploads:/app/uploads
     networks:
-      - graduation-network
+      - deepguard-network
 
-  backend-node:
-    build: ./backend-node
-    container_name: node_backend_container
+  # 3. الباك-إند (Node.js)
+  backend:
+    build: 
+      context: ./backend-node
+    container_name: deepguard_backend
     ports:
       - "3000:3000"
     volumes:
-      # السر هنا: الكود بتاعك شغال من dist فبيدور على uploads هناك
-      - ./backend-node/uploads:/app/dist/uploads
+      - ./backend-node:/app
+      - /app/node_modules          # حماية المكتبات جوه الكونتينر
+      - /app/dist                  # حماية ملفات الـ JavaScript المحولة
       - ./backend-node/uploads:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - AI_SERVICE_URL=http://host.docker.internal:8000
     env_file:
       - ./backend-node/.env
-    networks:
-      - graduation-network
     depends_on:
       - mongodb
       - cyber-service
+    networks:
+      - deepguard-network
+
+  # 4. الفرونت-إند (React/Vite)
+  front-node:
+    build: 
+      context: ./frontend_node
+    container_name: front_node_container
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend_node:/app
+      - /app/node_modules
+    env_file:
+      - ./frontend_node/.env
+    environment:
+      - VITE_API_BASE_URL=http://localhost:3000
+    depends_on:
+      - backend
+    networks:
+      - deepguard-network
 
 networks:
-  graduation-network:
+  deepguard-network:
     driver: bridge
 
 volumes:

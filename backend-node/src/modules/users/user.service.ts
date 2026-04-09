@@ -17,7 +17,7 @@ class UserService {
   private _revokeToken = new RevokeTokenRepository(RevokeTokenModel);
 
   signUp = async (req: Request, res: Response, next: NextFunction) => {
-    const { email, password, role }: UVT.signUpSchemaType = req.body;
+    const { email, password, userName }: UVT.signUpSchemaType = req.body;
 
     if (await this._userModel.findOne({ email }))
       throw new AppError("User already exists", 409);
@@ -31,7 +31,7 @@ class UserService {
       OTP: hashedOTP,
       email,
       password: hashedPassword,
-      role,
+      userName,
     });
 
     return res.status(201).json({ message: "Success", user });
@@ -56,40 +56,7 @@ class UserService {
     return res.status(200).json({ message: "confirmed" });
   };
 
-  updateProfile = async (req: Request, res: Response, next: NextFunction) => {
-    const { fullName }: UVT.updateProfileSchemaType = req.body;
 
-    const userId = req.user?._id;
-    if (!userId) throw new AppError("Unauthorized", 401);
-
-    if (!fullName && !req.file) {
-      throw new AppError("No data to update", 400);
-    }
-
-    const user = await this._userModel.findById(userId.toString());
-    if (!user) throw new AppError("User not found", 404);
-
-    if (req.file) {
-      if (user.profilePicture && fs.existsSync(user.profilePicture)) {
-        fs.unlinkSync(user.profilePicture);
-      }
-    }
-    await this._userModel.findOneAndUpdate(
-      { _id: userId },
-      {
-        ...(fullName && { fullName }),
-        ...(req.file && { profilePicture: req.file.path }),
-      },
-    );
-
-    res.status(200).json({
-      message: "Profile updated successfully",
-      user: {
-        fullName: user.fullName,
-        profilePic: user.profilePicture,
-      },
-    });
-  };
 
   signIn = async (req: Request, res: Response, next: NextFunction) => {
     const { email, password }: UVT.signInSchemaType = req.body;
@@ -203,7 +170,7 @@ class UserService {
   };
 
   codeConfirmation = async (req: Request, res: Response, next: NextFunction) => {
-    const {OTP, email} = req.body
+    const { OTP, email } = req.body
 
     const user = await this._userModel.findOne({
       email,
