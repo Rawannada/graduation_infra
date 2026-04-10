@@ -10,10 +10,11 @@ import { summarizeSchema } from "./ai.validation";
 import { ChatRepository } from "../../DB/repositories/chat.repository";
 import chatModel from "../../DB/models/chat.model";
 import mongoose from "mongoose";
+import FormData from "form-data";
 
 class AiService {
   constructor() {
-    this.aiBaseUrl = process.env.AI_SERVICE_URL || "http://localhost:8000";
+    this.aiBaseUrl = process.env.AI_SERVICE_URL || "http://host.docker.internal:8000";
   }
   private _fileModel = new FileRepository(fileModel);
   private _chatModel = new ChatRepository(chatModel);
@@ -41,6 +42,7 @@ class AiService {
       }
 
       const filePath = file.path;
+      console.log(filePath);
 
       if (!filePath || !fs.existsSync(filePath)) {
         throw new AppError("File not found on disk", 404);
