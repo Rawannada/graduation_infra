@@ -4,7 +4,7 @@
   "description": "",
   "main": "dist/index.js",
   "scripts": {
-    "start:dev": "concurrently \"tsc --watch\" \"nodemon --env-file=.env dist/index.js\""
+    "start:dev": "concurrently \"tsc --watch\" \"nodemon --env-file=.env\""
   },
   "keywords": [],
   "author": "",

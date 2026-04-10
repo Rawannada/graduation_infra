@@ -64,8 +64,9 @@ class AiService {
           httpsAgent: new https.Agent({ keepAlive: true }),
         },
       );
-
+      console.log("AI RESPONSE FULL:", response.data);
       const summary = response.data.summary;
+      console.log("EXTRACTED SUMMARY:", summary);
 
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },

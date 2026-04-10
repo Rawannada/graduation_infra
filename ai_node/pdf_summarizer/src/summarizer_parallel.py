@@ -18,7 +18,7 @@ def _fast_summarize(url: str, model: str, prompt: str, temp: float, tokens: int)
         "stream": False,
         "options": {"temperature": temp, "num_predict": tokens}
     }
-    resp = requests.post(url, json=payload, timeout=60)
+    resp = requests.post(url, json=payload, timeout=300)
     resp.raise_for_status()
     return resp.json().get("response", "Summary failed")
 

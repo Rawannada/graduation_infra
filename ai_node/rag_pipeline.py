@@ -18,7 +18,7 @@ class EmbeddingGenerator:
         response = requests.post(
             self.url,
             json={"model": self.model_name, "prompt": text},
-            timeout=60
+            timeout=300
         )
         if response.status_code == 200:
             return response.json()["embedding"]
