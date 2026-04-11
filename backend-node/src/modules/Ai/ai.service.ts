@@ -11,6 +11,7 @@ import { ChatRepository } from "../../DB/repositories/chat.repository";
 import chatModel from "../../DB/models/chat.model";
 import mongoose from "mongoose";
 import FormData from "form-data";
+import path from "path";
 
 class AiService {
   constructor() {
@@ -41,8 +42,7 @@ class AiService {
         );
       }
 
-      const filePath = file.path;
-      console.log(filePath);
+      const filePath = path.resolve(file.path);
 
       if (!filePath || !fs.existsSync(filePath)) {
         throw new AppError("File not found on disk", 404);
@@ -64,9 +64,8 @@ class AiService {
           httpsAgent: new https.Agent({ keepAlive: true }),
         },
       );
-      console.log("AI RESPONSE FULL:", response.data);
+
       const summary = response.data.summary;
-      console.log("EXTRACTED SUMMARY:", summary);
 
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },
@@ -76,7 +75,7 @@ class AiService {
 
       return res.json({
         message: "Summary retrieved successfully",
-        summarize: updatedFile?.summary,
+        summary: updatedFile?.summary,
         fileUrl: `${req.protocol}://${req.get("host")}/${file.path}`,
       });
     } catch (error) {
@@ -103,10 +102,12 @@ class AiService {
         );
       }
 
+      const filePath = path.resolve(file.path);
+
       const response = await axios.post(
         `${this.aiBaseUrl}/api/ask`,
         {
-          fileId,
+          filePath,
           question,
         },
         {
