@@ -22,7 +22,7 @@ export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
-  const [loadingSummary, setLoadingSummary] = useState(true);
+  const [loadingSummary, setLoadingSummary] = useState(false);
   const [message, setMessage] = useState("");
   const [summary, setSummary] = useState("");
 
@@ -51,10 +51,10 @@ export default function Chat() {
       const data = await res.json();
 
       // السيرفر ممكن يرد بأي اسم مفتاح
-      const sum = data.summarize || data.summary;
+      const sum = data.summary;
 
       setSummary(sum || "No summary available.");
-      setMessage(data.message || "Summary retrieved successfully");
+      setMessage(data.message || "");
     } catch (err) {
       console.error(err);
       setMessage("Error summarizing file");
@@ -78,7 +78,7 @@ export default function Chat() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
+          Authorization: `bearer ${accessToken}`,
         },
         body: JSON.stringify({ question: currentQuestion }),
       });
@@ -109,7 +109,7 @@ export default function Chat() {
     if (!fileId) return;
     try {
       const res = await fetch(`http://localhost:3000/ai/chat/${fileId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { Authorization: `bearer ${accessToken}` },
       });
       if (!res.ok) {
         throw new Error("Server error");
@@ -126,13 +126,17 @@ export default function Chat() {
       console.error("History error:", err);
     }
   };
-  useEffect(() => {
-    if (fileId && accessToken) {
-      handleSummarize();
-      fetchChatHistory();
-    }
-  }, [fileId, accessToken]);
+  const hasFetched = useRef({});
 
+  useEffect(() => {
+    if (!fileId || !accessToken) return;
+    if (hasFetched.current[fileId]) return;
+
+    hasFetched.current[fileId] = true;
+
+    handleSummarize();
+    fetchChatHistory();
+  }, [fileId, accessToken]);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
@@ -186,7 +190,9 @@ export default function Chat() {
             <div className="summary">
               <div className="sumtitle">Summary</div>
               <div className="sumcontent">
-                {summary ? summary : "No summary available yet."}
+                {loadingSummary
+                  ? "Loading summary..."
+                  : summary || "No summary available"}
               </div>
             </div>
 
