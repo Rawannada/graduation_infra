@@ -5,6 +5,8 @@ import Lottie from "lottie-react";
 import water from "./assets/water.json";
 import { useContext } from "react";
 import { FileContext } from "./FileContext";
+// import AddCategoryModal from "./AddCategoryModal";
+import CreateCategoryModal from "./CreateCategoryModal";
 import {
   CloudUpload,
   FileUp,
@@ -12,15 +14,19 @@ import {
   Upload,
   ShieldCheck,
   ShieldAlert,
+  ChevronRight,
+  ChevronLeft,
+  FileText
 } from "lucide-react";
+import { DragTextContext } from "./DragTextContext";
 
 export default function Home() {
   const navigate = useNavigate();
   const inputRef = useRef(null);
   const [scanned, setscanned] = useState(false);
-  const [dragtext, setDragtext] = useState(
-    "Drag & drop your files here or click to browse",
-  );
+  const { dragtext, setDragtext } = useContext(DragTextContext);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isSafe, setisSafe] = useState(null);
   const [riskLevel, setRiskLevel] = useState(null);
@@ -28,7 +34,57 @@ export default function Home() {
   const [showReport, setShowReport] = useState(false);
   const { files = [], setFiles } = useContext(FileContext);
   const accessToken = localStorage.getItem("accessToken");
+  const [recentFiles, setRecentFiles] = useState([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 6;
+  const indexOfLast = currentPage * itemsPerPage;
+  const indexOfFirst = indexOfLast - itemsPerPage;
 
+  const currentFiles = recentFiles.slice(indexOfFirst, indexOfLast);
+  const totalPages = Math.ceil(recentFiles.length / itemsPerPage);
+
+  function timeAgo(date) {
+  const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+
+  const intervals = [
+    { label: "y", seconds: 31536000 },
+    { label: "mo", seconds: 2592000 },
+    { label: "d", seconds: 86400 },
+    { label: "h", seconds: 3600 },
+    { label: "m", seconds: 60 },
+  ];
+
+  for (let i of intervals) {
+    const count = Math.floor(seconds / i.seconds);
+    if (count > 0) {
+      return `${count}${i.label} ago`;
+    }
+  }
+
+  return "just now";
+}
+  useEffect(() => {
+    async function fetchRecent() {
+      try {
+        const res = await fetch("http://localhost:3000/upload/recent", {
+          headers: { Authorization: `bearer ${accessToken}` },
+        });
+        const data = await res.json();
+        if (data.files) setRecentFiles(data.files);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    fetchRecent();
+  }, []);
+  useEffect(() => {
+    setDragtext("Drag & drop your files here or click to browse");
+    setscanned(false);
+    setisSafe(null);
+    setReport(null);
+    setRiskLevel(null);
+    setFiles([]);
+  }, []);
   //uploading file
   async function uploadFile(file) {
     setDragtext("Uploading file...");
@@ -47,7 +103,8 @@ export default function Home() {
 
       const data = await res.json();
       console.log(data);
-      setFiles([
+      setFiles((prev) => [
+        ...prev,
         {
           _id: data.pdf._id,
           name: file.name,
@@ -55,7 +112,6 @@ export default function Home() {
         },
       ]);
 
-      
       setDragtext("File uploaded and ready for scan");
     } catch (err) {
       console.error(err);
@@ -78,15 +134,22 @@ export default function Home() {
   }
 
   //scanning file
-  async function handleScan(e) {
+  function handleScan(e) {
     e.stopPropagation();
     if (!files?.length) return;
+    if (!files?.length || loading || scanned) return;
 
+    // بدل ما يبدأ الفحص مباشرة، نفتح مودال الكاتيجوري
+    setShowCategoryModal(true);
+  }
+  async function startScan() {
+    if (!files?.length) return;
     setLoading(true);
     setscanned(false);
 
     try {
-      const fileId = files[0]?._id;
+      const currentFile = files[files.length - 1];
+      const fileId = currentFile?._id;
       const res = await fetch(`http://localhost:3000/security/scan/${fileId}`, {
         method: "POST",
         headers: {
@@ -94,8 +157,6 @@ export default function Home() {
         },
       });
       const data = await res.json();
-      console.log("Scan result:", data);
-      // تحديث الـ state
 
       setisSafe(data.fileIsSafe);
       setReport(data.updatedFile);
@@ -108,20 +169,77 @@ export default function Home() {
       setLoading(false);
     }
   }
-
   const handleNewScan = () => {
     if (inputRef.current) {
+      // إعادة تهيئة input
       inputRef.current.value = null;
+
+      // listener للملف الجديد
+      const handleFileSelected = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setLoading(true);
+        setDragtext("Uploading file...");
+
+        try {
+          // رفع الملف
+          const formData = new FormData();
+          formData.append("file", file);
+          const res = await fetch("http://localhost:3000/upload/", {
+            method: "POST",
+            body: formData,
+            headers: {
+              Authorization: `bearer ${accessToken}`,
+            },
+          });
+          const data = await res.json();
+
+          const newFile = {
+            _id: data.pdf._id,
+            name: file.name,
+            originalFile: file,
+          };
+
+          setFiles([newFile]); // نخليها ملف واحد فقط
+          setDragtext("File uploaded, scanning...");
+
+          // عمل scan مباشر
+          const scanRes = await fetch(
+            `http://localhost:3000/security/scan/${data.pdf._id}`,
+            {
+              method: "POST",
+              headers: { Authorization: `bearer ${accessToken}` },
+            },
+          );
+          const scanData = await scanRes.json();
+
+          setisSafe(scanData.fileIsSafe);
+          setReport(scanData.updatedFile);
+          setRiskLevel(scanData.updatedFile.security.riskLevel);
+          setscanned(true);
+          setDragtext("Scan completed");
+        } catch (err) {
+          console.error(err);
+        } finally {
+          setLoading(false);
+          // إزالة الـ listener بعد انتهاء المهمة
+          inputRef.current.removeEventListener("change", handleFileSelected);
+        }
+      };
+
+      // إضافة listener قبل فتح نافذة اختيار الملف
+      inputRef.current.addEventListener("change", handleFileSelected);
       inputRef.current.click();
     }
   };
   const handleCancel = (e) => {
     e.stopPropagation();
-    setFile(null);
+
     setisSafe(null);
     setscanned(false);
     setFiles([]);
-    setShowbtns(false);
+
     setDragtext("Drag & drop your files here or click to browse");
 
     if (inputRef.current) {
@@ -135,15 +253,15 @@ export default function Home() {
     if (!files?.length) return;
 
     // بنستخدم الـ originalFile اللي خزنناه في الـ uploadFile
-    const fileToOpen = files[0].originalFile;
-
+    const currentFile = files[files.length - 1];
+    const fileToOpen = currentFile.originalFile;
     if (fileToOpen) {
       const fileUrl = URL.createObjectURL(fileToOpen);
 
       navigate("/Chat", {
         state: {
           fileUrl,
-          fileId: files[0]?._id,
+          fileId: currentFile?._id,
           accessToken: accessToken,
         },
       });
@@ -164,9 +282,38 @@ export default function Home() {
     e.preventDefault();
     setDragtext("Drop your file here");
   }
+  useEffect(() => {
+    async function fetchCategories() {
+      try {
+        const res = await fetch("http://localhost:3000/upload/categories", {
+          headers: {
+            Authorization: `bearer ${accessToken}`,
+          },
+        });
+        const data = await res.json();
+        setCategories(data.categories || []);
+        console.log("API RESPONSE:", data);
+      } catch (err) {
+        console.error(err);
+      }
+    }
 
+    fetchCategories();
+  }, []);
   return (
     <div className="homecom">
+      {showCategoryModal && (
+        <CreateCategoryModal
+          categories={categories} // 👈 IMPORTANT
+          file={files[files.length - 1]} // 👈 مهم جدًا
+          accessToken={accessToken} // 👈 مهم جدًا
+          onClose={() => setShowCategoryModal(false)}
+          onSave={() => {
+            setShowCategoryModal(false);
+            startScan(); // دالة جديدة تبدأ الفحص فعليًا بعد اختيار الكاتيجوري
+          }}
+        />
+      )}
       <div className="title">
         <PanelLeft size={20} />
         <span>Home</span>
@@ -242,17 +389,17 @@ export default function Home() {
             onDragEnter={handleenter}
             onDragLeave={handledragleave}
           >
-            {loading && (
+            {/* {loading && (
               <div className="text-center mt-3">
                 <div style={{ position: "relative", width: 100, height: 100 }}>
-                  {/* Lottie animation */}
+                 
                   <Lottie
                     animationData={water}
                     loop={true}
                     style={{ width: "100%", height: "100%" }}
                   />
 
-                  {/* Gradient overlay */}
+               
                   <div
                     style={{
                       position: "absolute",
@@ -263,17 +410,17 @@ export default function Home() {
 
                       background:
                         "linear-gradient(45deg, #43729F, #6E92AB, #92A8B7)",
-                      mixBlendMode: "color", // يحط اللون على الأنيميشن
-                      pointerEvents: "none", // يخلي الضغط يروح للـ Lottie
-                      borderRadius: "50%", // لو محتاجة شكل دائري
+                      mixBlendMode: "color", 
+                      pointerEvents: "none", 
+                      borderRadius: "50%", 
                     }}
                   />
                 </div>
 
                 <p>Scanning...</p>
               </div>
-            )}
-
+            )} */}
+            {loading && <span className="loader"></span>}
             {/* قبل اختيار أي ملف */}
             {!scanned && !loading && files.length === 0 && (
               <>
@@ -288,9 +435,9 @@ export default function Home() {
                 <div className="dragtext">{dragtext}</div>
 
                 <div className="file-name">
-                  {files[0]?.name?.length > 20
-                    ? files[0]?.name.slice(0, 20) + "..."
-                    : files[0]?.name || "Selected file"}
+                  {files[files.length - 1]?.name?.length > 20
+                    ? files[files.length - 1]?.name.slice(0, 20) + "..."
+                    : files[files.length - 1]?.name}
                 </div>
 
                 <div className="btns">
@@ -323,7 +470,6 @@ export default function Home() {
             )}
           </div>
         </div>
-
         {scanned && riskLevel && (
           <div
             style={{
@@ -387,55 +533,58 @@ export default function Home() {
                 </button>
               </div>
 
-              
-        <div className="modal-body">
-          <div className="report-grid">
-             <div className="report-item">
-              <span>file_id</span> <br />
-              <div>{report?._id}</div>
-            </div>
-             <div className="report-item">
-              <span>file_name</span> <br />
-              <div>{report?.fileName}</div>
-            </div>
-             <div className="report-item">
-              <span>file_path</span> <br />
-              <div>{report?.path}</div>
-            </div>
-             <div className="report-item">
-              <span>scan_status</span> <br />
-              <div>{report?.scanStatus}</div>
-            </div>
-             <div className="report-item">
-              <span>ScanTextSummary</span> <br />
-              <div>{report?.scanTextSummary}</div>
-            </div>
-            <div className="report-item">
-
-              <span>Risk_Score</span>
-              <span style={{ color: report?.security?.riskScore > 70 ? "red" : "green" }}>
-                <br />
-                <div>{report?.security?.riskScore}%</div>
-              </span>
-            </div>
-            <div className="report-item">
-              <span>Malware_Analysis</span> <br />
-              <div>{report?.security?.malwareRisk}</div>
-            </div>
-            <div className="report-item">
-              <span>Prompt_Injection</span> <br />
-              <div> {report?.security?.promptInjectionRisk}</div>
-            </div>
-            <div className="report-item">
-              <span>Content_Moderation</span> <br />{" "}
-              <div>{report?.security?.contentModeration}</div>
-            </div>
-            <div className="report-item">
-              <span>Risk_Label</span> <br />
-              <div>{report?.security?.riskLabel}</div>
-            </div>
-          </div>
-        </div>
+              <div className="modal-body">
+                <div className="report-grid">
+                  <div className="report-item">
+                    <span>file_id</span> <br />
+                    <div>{report?._id}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>file_name</span> <br />
+                    <div>{report?.fileName}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>file_path</span> <br />
+                    <div>{report?.path}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>scan_status</span> <br />
+                    <div>{report?.scanStatus}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>ScanTextSummary</span> <br />
+                    <div>{report?.scanTextSummary}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>Risk_Score</span>
+                    <span
+                      style={{
+                        color:
+                          report?.security?.riskScore > 70 ? "red" : "green",
+                      }}
+                    >
+                      <br />
+                      <div>{report?.security?.riskScore}%</div>
+                    </span>
+                  </div>
+                  <div className="report-item">
+                    <span>Malware_Analysis</span> <br />
+                    <div>{report?.security?.malwareRisk}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>Prompt_Injection</span> <br />
+                    <div> {report?.security?.promptInjectionRisk}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>Content_Moderation</span> <br />{" "}
+                    <div>{report?.security?.contentModeration}</div>
+                  </div>
+                  <div className="report-item">
+                    <span>Risk_Label</span> <br />
+                    <div>{report?.security?.riskLabel}</div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -450,6 +599,60 @@ export default function Home() {
             handleChange(e);
           }}
         />
+        {!scanned && !loading && files.length === 0 && (
+        <div className="recent-content">
+          <div className="header">
+            <span>recent</span>
+            <div className="buttons">
+              <button
+                className="scroll-btn left"
+                onClick={() => {
+                  document.getElementById("recentRow").scrollBy({
+                    left: -300,
+                    behavior: "smooth",
+                  });
+                }}
+              >
+                <ChevronLeft />
+              </button>
+              <button
+                className="scroll-btn right"
+                onClick={() => {
+                  document.getElementById("recentRow").scrollBy({
+                    left: 300,
+                    behavior: "smooth",
+                  });
+                }}
+              >
+                <ChevronRight />
+              </button>
+            </div>
+          </div>
+
+          <div className="recent-slider" id="recentRow">
+            {recentFiles.map((file) => (
+              <div
+                key={file._id}
+                className="recent-item-home"
+                onClick={() => {
+                  if (file.url) {
+                    navigate("/Chat", {
+                      state: {
+                        fileUrl: file.url,
+                        fileId: file._id,
+                        accessToken,
+                      },
+                    });
+                  }
+                }}
+              >
+                <FileText size={18}/>
+                <div className="createdAt"><div> {file.fileName}</div>
+               <div className="time">{timeAgo(file.createdAt)}</div></div>
+              </div>
+            ))}
+          </div>
+        </div>)}
       </div>
     </div>
   );

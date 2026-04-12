@@ -26,7 +26,7 @@ export default function Code() {
         email,
         OTP,
       });
-      navigate("/home");
+      navigate("/login");
     } catch (err) {
       alert(err.response?.data?.message || "Invalid OTP");
     }
