@@ -44,25 +44,25 @@ export default function Home() {
   const totalPages = Math.ceil(recentFiles.length / itemsPerPage);
 
   function timeAgo(date) {
-  const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+    const seconds = Math.floor((new Date() - new Date(date)) / 1000);
 
-  const intervals = [
-    { label: "y", seconds: 31536000 },
-    { label: "mo", seconds: 2592000 },
-    { label: "d", seconds: 86400 },
-    { label: "h", seconds: 3600 },
-    { label: "m", seconds: 60 },
-  ];
+    const intervals = [
+      { label: "y", seconds: 31536000 },
+      { label: "mo", seconds: 2592000 },
+      { label: "d", seconds: 86400 },
+      { label: "h", seconds: 3600 },
+      { label: "m", seconds: 60 },
+    ];
 
-  for (let i of intervals) {
-    const count = Math.floor(seconds / i.seconds);
-    if (count > 0) {
-      return `${count}${i.label} ago`;
+    for (let i of intervals) {
+      const count = Math.floor(seconds / i.seconds);
+      if (count > 0) {
+        return `${count}${i.label} ago`;
+      }
     }
-  }
 
-  return "just now";
-}
+    return "just now";
+  }
   useEffect(() => {
     async function fetchRecent() {
       try {
@@ -600,59 +600,59 @@ export default function Home() {
           }}
         />
         {!scanned && !loading && files.length === 0 && (
-        <div className="recent-content">
-          <div className="header">
-            <span>recent</span>
-            <div className="buttons">
-              <button
-                className="scroll-btn left"
-                onClick={() => {
-                  document.getElementById("recentRow").scrollBy({
-                    left: -300,
-                    behavior: "smooth",
-                  });
-                }}
-              >
-                <ChevronLeft />
-              </button>
-              <button
-                className="scroll-btn right"
-                onClick={() => {
-                  document.getElementById("recentRow").scrollBy({
-                    left: 300,
-                    behavior: "smooth",
-                  });
-                }}
-              >
-                <ChevronRight />
-              </button>
-            </div>
-          </div>
-
-          <div className="recent-slider" id="recentRow">
-            {recentFiles.map((file) => (
-              <div
-                key={file._id}
-                className="recent-item-home"
-                onClick={() => {
-                  if (file.url) {
-                    navigate("/Chat", {
-                      state: {
-                        fileUrl: file.url,
-                        fileId: file._id,
-                        accessToken,
-                      },
+          <div className="recent-content">
+            <div className="header">
+              <span>recent</span>
+              <div className="buttons">
+                <button
+                  className="scroll-btn left"
+                  onClick={() => {
+                    document.getElementById("recentRow").scrollBy({
+                      left: -300,
+                      behavior: "smooth",
                     });
-                  }
-                }}
-              >
-                <FileText size={18}/>
-                <div className="createdAt"><div> {file.fileName}</div>
-               <div className="time">{timeAgo(file.createdAt)}</div></div>
+                  }}
+                >
+                  <ChevronLeft />
+                </button>
+                <button
+                  className="scroll-btn right"
+                  onClick={() => {
+                    document.getElementById("recentRow").scrollBy({
+                      left: 300,
+                      behavior: "smooth",
+                    });
+                  }}
+                >
+                  <ChevronRight />
+                </button>
               </div>
-            ))}
-          </div>
-        </div>)}
+            </div>
+
+            <div className="recent-slider" id="recentRow">
+              {recentFiles.map((file) => (
+                <div
+                  key={file._id}
+                  className="recent-item-home"
+                  onClick={() => {
+                    if (file.url) {
+                      navigate("/Chat", {
+                        state: {
+                          fileUrl: file.url,
+                          fileId: file._id,
+                          accessToken,
+                        },
+                      });
+                    }
+                  }}
+                >
+                  <FileText size={18} />
+                  <div className="createdAt"><div> {file.fileName}</div>
+                    <div className="time">{timeAgo(file.createdAt)}</div></div>
+                </div>
+              ))}
+            </div>
+          </div>)}
       </div>
     </div>
   );
