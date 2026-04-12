@@ -3,19 +3,32 @@ import { FileRepository } from "../../DB/repositories/file.repository";
 import fileModel from "../../DB/models/File.model";
 import fs from "fs";
 import { AppError } from "../../utils/ClassError";
-import axios, { options } from "axios";
+import axios from "axios";
 import http from "http";
 import https from "https";
 import { summarizeSchema } from "./ai.validation";
 import { ChatRepository } from "../../DB/repositories/chat.repository";
-import chatModel from "../../DB/models/chat.model";
+import chatModel, { Source } from "../../DB/models/chat.model";
 import mongoose from "mongoose";
-import FormData from "form-data";
 import path from "path";
+
+function deduplicateSources(sources: Source[]): Source[] {
+  const map = new Map<string, Source>();
+
+  for (const item of sources) {
+    const key = `${item.source}-${item.page}`;
+
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  }
+
+  return Array.from(map.values());
+}
 
 class AiService {
   constructor() {
-    this.aiBaseUrl = process.env.AI_SERVICE_URL || "http://host.docker.internal:8000";
+    this.aiBaseUrl = process.env.AI_SERVICE_URL || "http://localhost:8000";
   }
   private _fileModel = new FileRepository(fileModel);
   private _chatModel = new ChatRepository(chatModel);
@@ -66,6 +79,7 @@ class AiService {
       );
 
       const summary = response.data.summary;
+      // const summary = "response.data.summaryyyyyyy lololololoooo";
 
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },
@@ -118,18 +132,28 @@ class AiService {
       );
 
       // const answer: string = `response.data.answer`;
+      // let sources = [
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 1 },
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 3 },
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 4 },
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 4 },
+      // ];
       const answer: string = response.data.answer;
+      let sources: Source[] = response.data.sources;
+
+      sources = deduplicateSources(sources);
 
       await this._chatModel.create({
         fileId: new mongoose.Types.ObjectId(fileId),
         question,
         answer,
-        createdAt: new Date(),
+        sources,
       });
 
       return res.json({
         message: "Answer retrieved successfully",
         answer,
+        sources,
       });
     } catch (error: any) {
       if (error instanceof Error && "errors" in error) {
