@@ -1,7 +1,5 @@
 # DeepGrade X: Hybrid Infrastructure & Integration
 
-This repository serves as the central integration and orchestration layer for the **DeepGrade X** project. It manages the connectivity between various microservices to ensure a seamless flow from document upload to AI analysis.
-
 ---
 
 ## Project Concept
