@@ -45,31 +45,8 @@ export default function Sidebar() {
     setAddingCategoryModal(true);
   }
 
-  
-  useEffect(() => {
-    async function fetchGeneralFiles() {
-      try {
-        const res = await fetch(
-          `http://localhost:3000/upload/files/${GENERAL_CATEGORY_ID}`,
-          {
-            headers: {
-              Authorization: `bearer ${accessToken}`,
-            },
-          },
-        );
 
-        const data = await res.json();
 
-        if (data.filesWithUrls) {
-          setGeneralFiles(data.filesWithUrls);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    }
-
-    fetchGeneralFiles();
-  }, []);
   async function handleLogout() {
     const token = localStorage.getItem("accessToken");
 
@@ -200,7 +177,7 @@ export default function Sidebar() {
               className={`username ${open ? "active" : ""}`}
               onClick={() => setOpen(!open)}
             >
-              <div> {user?.userName|| user?.email?.split("@")[0]}</div>
+              <div> {user?.userName || user?.email?.split("@")[0]}</div>
               <div>
                 {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
               </div>
@@ -285,62 +262,62 @@ export default function Sidebar() {
                 {[...recent, ...files].length === 0
                   ? ""
                   : [...recent, ...files].map((file, index) => {
-                      const name =
-                        file.name ||
-                        file.fileName ||
-                        (file.url && file.url.split("\\").pop());
-                      const shortName =
-                        name.length > 10 ? name.slice(0, 10) + "..." : name;
+                    const name =
+                      file.name ||
+                      file.fileName ||
+                      (file.url && file.url.split("\\").pop());
+                    const shortName =
+                      name.length > 10 ? name.slice(0, 10) + "..." : name;
 
-                      const hovered = activeFileIndex === index;
-                      const menuOpen = menuOpenIndex === index;
+                    const hovered = activeFileIndex === index;
+                    const menuOpen = menuOpenIndex === index;
 
-                      return (
-                        <div
-                          key={file.url || file.name || index}
-                          className="file-item"
-                          style={{ position: "relative", cursor: "pointer" }}
-                          onMouseEnter={() => setActiveFileIndex(index)}
-                          onMouseLeave={() => setActiveFileIndex(null)}
-                          onClick={() =>
-                            setMenuOpenIndex(menuOpen ? null : index)
-                          }
-                        >
-                          <FileText size={20} />
-                          {shortName}
+                    return (
+                      <div
+                        key={file.url || file.name || index}
+                        className="file-item"
+                        style={{ position: "relative", cursor: "pointer" }}
+                        onMouseEnter={() => setActiveFileIndex(index)}
+                        onMouseLeave={() => setActiveFileIndex(null)}
+                        onClick={() =>
+                          setMenuOpenIndex(menuOpen ? null : index)
+                        }
+                      >
+                        <FileText size={20} />
+                        {shortName}
 
-                          {/* أيقونة تظهر عند hover */}
-                          {hovered && !menuOpen && (
-                            <span
-                              style={{
-                                position: "absolute",
-                                top: "0",
-                                right: "0",
-                                color: "#000",
-                              }}
-                            >
-                              <EllipsisVertical size={17} />
-                            </span>
-                          )}
+                        {/* أيقونة تظهر عند hover */}
+                        {hovered && !menuOpen && (
+                          <span
+                            style={{
+                              position: "absolute",
+                              top: "0",
+                              right: "0",
+                              color: "#000",
+                            }}
+                          >
+                            <EllipsisVertical size={17} />
+                          </span>
+                        )}
 
-                          {/* قائمة الخيارات تظهر عند الضغط */}
-                          {menuOpen && (
-                            <div
-                              style={{
-                                width: "170px",
-                                height: "80px",
-                                position: "absolute",
-                                top: "100%",
-                                left: "0",
-                                background: "white",
+                        {/* قائمة الخيارات تظهر عند الضغط */}
+                        {menuOpen && (
+                          <div
+                            style={{
+                              width: "170px",
+                              height: "80px",
+                              position: "absolute",
+                              top: "100%",
+                              left: "0",
+                              background: "white",
 
-                                border: "1px solid #ccc",
-                                borderRadius: "16px",
-                                padding: "5px",
-                                zIndex: 100,
-                              }}
-                            >
-                              {/* <div
+                              border: "1px solid #ccc",
+                              borderRadius: "16px",
+                              padding: "5px",
+                              zIndex: 100,
+                            }}
+                          >
+                            {/* <div
                   style={{ padding: "5px 10px", cursor: "pointer" }}
                   onClick={() => {
                     console.log("Rename", file.name);
@@ -349,98 +326,98 @@ export default function Sidebar() {
                 >
                   Rename
                 </div> */}
-                              <div
-                                style={{
-                                  background: "#DDE4EE",
-                                  height: "28px",
-                                  cursor: "pointer",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  borderRadius: "16px",
-                                  marginBottom: "5px ",
-                                  padding: "5px 10px",
-                                }}
-                                onClick={() => {
-                                  console.log("Rename", file.name);
-                                  setMenuOpenIndex(null);
-                                }}
-                              >
-                                <Plus
-                                  size={15}
-                                  style={{ marginRight: "5px" }}
-                                />
-                                <span> add to category</span>
-                              </div>
-
-                              <div
-                                style={{
-                                  padding: "5px 10px",
-                                  cursor: "pointer",
-                                  color: "red",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  borderRadius: "16px",
-                                  marginBottom: "5px ",
-                                  padding: "5px 10px",
-                                }}
-                                onClick={async () => {
-                                  const fileId = file._id || file.id;
-
-                                  if (!fileId) {
-                                    console.warn("No fileId found", file);
-                                    return;
-                                  }
-
-                                  try {
-                                    const accessToken =
-                                      localStorage.getItem("accessToken");
-
-                                    const res = await fetch(
-                                      `http://localhost:3000/upload/delete/${fileId}`,
-                                      {
-                                        method: "DELETE",
-                                        headers: {
-                                          Authorization: `bearer ${accessToken}`,
-                                        },
-                                      },
-                                    );
-                                    const data = await res.json(); // 👈 ده المهم
-                                    console.log("Response:", data);
-
-                                    if (!res.ok)
-                                      throw new Error("Delete failed");
-
-                                    console.log("Deleted", fileId);
-
-                                    // تحديث UI
-                                    setFiles((prev) =>
-                                      prev.filter(
-                                        (f) => (f._id || f.id) !== fileId,
-                                      ),
-                                    );
-                                    setRecent((prev) =>
-                                      prev.filter(
-                                        (f) => (f._id || f.id) !== fileId,
-                                      ),
-                                    );
-
-                                    setMenuOpenIndex(null);
-                                  } catch (err) {
-                                    console.error(err);
-                                  }
-                                }}
-                              >
-                                <Trash2
-                                  size={15}
-                                  style={{ marginRight: "5px" }}
-                                />
-                                <span> delete</span>
-                              </div>
+                            <div
+                              style={{
+                                background: "#DDE4EE",
+                                height: "28px",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                borderRadius: "16px",
+                                marginBottom: "5px ",
+                                padding: "5px 10px",
+                              }}
+                              onClick={() => {
+                                console.log("Rename", file.name);
+                                setMenuOpenIndex(null);
+                              }}
+                            >
+                              <Plus
+                                size={15}
+                                style={{ marginRight: "5px" }}
+                              />
+                              <span> add to category</span>
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
+
+                            <div
+                              style={{
+                                padding: "5px 10px",
+                                cursor: "pointer",
+                                color: "red",
+                                display: "flex",
+                                alignItems: "center",
+                                borderRadius: "16px",
+                                marginBottom: "5px ",
+                                padding: "5px 10px",
+                              }}
+                              onClick={async () => {
+                                const fileId = file._id || file.id;
+
+                                if (!fileId) {
+                                  console.warn("No fileId found", file);
+                                  return;
+                                }
+
+                                try {
+                                  const accessToken =
+                                    localStorage.getItem("accessToken");
+
+                                  const res = await fetch(
+                                    `http://localhost:3000/upload/delete/${fileId}`,
+                                    {
+                                      method: "DELETE",
+                                      headers: {
+                                        Authorization: `bearer ${accessToken}`,
+                                      },
+                                    },
+                                  );
+                                  const data = await res.json(); // 👈 ده المهم
+                                  console.log("Response:", data);
+
+                                  if (!res.ok)
+                                    throw new Error("Delete failed");
+
+                                  console.log("Deleted", fileId);
+
+                                  // تحديث UI
+                                  setFiles((prev) =>
+                                    prev.filter(
+                                      (f) => (f._id || f.id) !== fileId,
+                                    ),
+                                  );
+                                  setRecent((prev) =>
+                                    prev.filter(
+                                      (f) => (f._id || f.id) !== fileId,
+                                    ),
+                                  );
+
+                                  setMenuOpenIndex(null);
+                                } catch (err) {
+                                  console.error(err);
+                                }
+                              }}
+                            >
+                              <Trash2
+                                size={15}
+                                style={{ marginRight: "5px" }}
+                              />
+                              <span> delete</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
 
                 <button className="upload-btn" onClick={handleUploadClick}>
                   <Plus size={16} />
@@ -472,11 +449,11 @@ export default function Sidebar() {
                 {generalFiles.length === 0
                   ? ""
                   : generalFiles.map((file) => (
-                      <div key={file._id} className="file-item">
-                        <FileText size={16} />
-                        {file.fileName}
-                      </div>
-                    ))}
+                    <div key={file._id} className="file-item">
+                      <FileText size={16} />
+                      {file.fileName}
+                    </div>
+                  ))}
 
                 <button className="upload-to-btn" onClick={handleUploadClick}>
                   <Plus size={16} />
