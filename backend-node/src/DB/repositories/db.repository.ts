@@ -9,7 +9,7 @@ import {
 } from "mongoose";
 
 export abstract class DbRepository<TDocument> {
-  constructor(protected readonly model: Model<TDocument>) {}
+  constructor(protected readonly model: Model<TDocument>) { }
 
   async create(data: Partial<TDocument>): Promise<HydratedDocument<TDocument>> {
     return this.model.create(data);
@@ -50,5 +50,19 @@ export abstract class DbRepository<TDocument> {
     options?: QueryOptions<TDocument>;
   }): Promise<HydratedDocument<TDocument>[]> {
     return this.model.find(filter, select, options);
+  }
+
+  async findOneAndDelete(
+    filter: QueryFilter<TDocument>,
+    options: QueryOptions = {},
+  ): Promise<TDocument | null> {
+    return this.model.findOneAndDelete(filter, options);
+  }
+
+  async updateMany(
+    filter: QueryFilter<TDocument>,
+    update: UpdateQuery<TDocument>,
+  ): Promise<UpdateWriteOpResult> {
+    return this.model.updateMany(filter, update);
   }
 }

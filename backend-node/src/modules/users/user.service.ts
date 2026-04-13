@@ -10,11 +10,13 @@ import uuid4 from "uuid4";
 import { GenerateToken } from "../../utils/Token";
 import { RevokeTokenRepository } from "../../DB/repositories/revokeToken.repository";
 import RevokeTokenModel from "../../DB/models/RevokeToken.model";
-import fs from "fs";
+import categoryModel from "../../DB/models/category.model";
+import { CategoryRepository } from "../../DB/repositories/category.repository";
 
 class UserService {
   private _userModel = new UserRepository(userModel);
   private _revokeToken = new RevokeTokenRepository(RevokeTokenModel);
+  private _categoryModel = new CategoryRepository(categoryModel)
 
   signUp = async (req: Request, res: Response, next: NextFunction) => {
     const { email, password, userName }: UVT.signUpSchemaType = req.body;
@@ -27,12 +29,18 @@ class UserService {
     const hashedOTP = await Hash(String(OTP));
 
     eventEmitter.emit("confirmEmail", { email, OTP });
+
     const user = await this._userModel.createOneUser({
       OTP: hashedOTP,
       email,
       password: hashedPassword,
-      userName,
+      userName
     });
+
+    await this._categoryModel.create({
+      categoryName: "General Category",
+      userId: user._id
+    })
 
     return res.status(201).json({ message: "Success", user });
   };
@@ -56,7 +64,72 @@ class UserService {
     return res.status(200).json({ message: "confirmed" });
   };
 
+  // updateProfile = async (req: Request, res: Response, next: NextFunction) => {
+  //   const { fullName }: UVT.updateProfileSchemaType = req.body;
 
+  //   const userId = req.user?._id;
+  //   if (!userId) throw new AppError("Unauthorized", 401);
+
+  //   if (!fullName && !req.file) {
+  //     throw new AppError("No data to update", 400);
+  //   }
+
+  //   const user = await this._userModel.findById(userId.toString());
+  //   if (!user) throw new AppError("User not found", 404);
+
+  //   if (req.file) {
+  //     if (user.profilePicture && fs.existsSync(user.profilePicture)) {
+  //       fs.unlinkSync(user.profilePicture);
+  //     }
+  //   }
+  //   await this._userModel.findOneAndUpdate(
+  //     { _id: userId },
+  //     {
+  //       ...(fullName && { fullName }),
+  //       ...(req.file && { profilePicture: req.file.path }),
+  //     },
+  //   );
+
+  //   res.status(200).json({
+  //     message: "Profile updated successfully",
+  //     user: {
+  //       fullName: user.fullName,
+  //       profilePic: user.profilePicture,
+  //     },
+  //   });
+  // };
+
+  // updateProfile = async (req: Request, res: Response, next: NextFunction) => {
+  //   const { fullName, email }: UVT.updateProfileSchemaType = req.body;
+
+  //   const user = await this._userModel.findOne({email})
+  //   if (!user) throw new AppError("User Not Found", 404);
+
+  //   if (!fullName && !req.file) {
+  //     throw new AppError("No data to update", 400);
+  //   }
+
+  //   if (req.file) {
+  //     if (user.profilePicture && fs.existsSync(user.profilePicture)) {
+  //       fs.unlinkSync(user.profilePicture);
+  //     }
+  //   }
+  //   await this._userModel.findOneAndUpdate(
+  //     { email },
+  //     {
+  //       ...(fullName && { fullName }),
+  //       ...(req.file && { profilePicture: req.file.path }),
+  //     },
+  //   );
+
+  //   res.status(200).json({
+  //     message: "Profile updated successfully",
+  //     user: {
+  //       fullName: user.fullName,
+  //       profilePic: user.profilePicture,
+  //     },
+  //   });
+  // };
 
   signIn = async (req: Request, res: Response, next: NextFunction) => {
     const { email, password }: UVT.signInSchemaType = req.body;

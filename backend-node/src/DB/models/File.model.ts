@@ -2,6 +2,7 @@ import mongoose, { Schema, model, Types } from "mongoose";
 
 export interface IFile {
   userId: Types.ObjectId;
+  categoryId: Types.ObjectId;
   fileName: string;
   path: string;
 
@@ -13,8 +14,6 @@ export interface IFile {
     promptInjectionRisk: string;
     contentModeration: string;
   };
-
-  // scanStatus?: "pending" | "completed" | "failed";
 
   scanTextSummary?: string;
 
@@ -30,6 +29,12 @@ const fileSchema = new Schema<IFile>(
       type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
+    },
+
+    categoryId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Category',
+      required: true
     },
 
     fileName: {
@@ -57,7 +62,7 @@ const fileSchema = new Schema<IFile>(
     //   default: "pending",
     // },
 
-    scanTextSummary: String, 
+    scanTextSummary: String,
 
     summary: String,
   },

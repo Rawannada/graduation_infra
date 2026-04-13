@@ -1,7 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
-import {rateLimit} from 'express-rate-limit'
+import { rateLimit } from 'express-rate-limit'
 import { AppError } from './utils/ClassError'
 import userRouter from './modules/users/user.controller'
 import connectionDB from './DB/connectionDB'
@@ -24,7 +24,7 @@ const corsOptions = {
 const limiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   statusCode: 429,
-  limit: 10,
+  limit: 100,
   message: {
     error: 'Many Requests, Try Again Later'
   },
@@ -33,15 +33,15 @@ const limiter = rateLimit({
 })
 
 
-const bootstrap = async() =>{
+const bootstrap = async () => {
   app.use('/uploads', express.static("uploads"))
   app.use(express.json())
   app.use(cors(corsOptions))
   app.use(helmet())
   app.use(limiter)
 
-  app.get('/', (req: Request, res: Response, next: NextFunction) =>{
-    return res.status(200).json({message: 'Welcom To Our App 😁'})
+  app.get('/', (req: Request, res: Response, next: NextFunction) => {
+    return res.status(200).json({ message: 'Welcom To Our App 😁' })
 
   })
 
@@ -51,26 +51,26 @@ const bootstrap = async() =>{
   app.use('/security', cyberSecurityRouter)
   await connectionDB()
 
-  app.use('{/*demo}', (req: Request, res: Response, next: NextFunction) =>{
+  app.use('{/*demo}', (req: Request, res: Response, next: NextFunction) => {
     throw new AppError(`InValid Url ${req.originalUrl}`, 404)
   })
 
-  app.use((err: AppError, req: Request, res: Response, next: NextFunction) =>{
-    return res.status(err.cause as unknown as number || 500).json({message: err.message, stack: err.stack})
+  app.use((err: AppError, req: Request, res: Response, next: NextFunction) => {
+    return res.status(err.cause as unknown as number || 500).json({ message: err.message, stack: err.stack })
 
   })
 
 
 
 
-  const server = app.listen(port, () =>{
+  const server = app.listen(port, () => {
     console.log(`Server is running on port: ${port}`);
-    
+
   })
 
-  server.timeout = 600000; 
+  server.timeout = 600000;
   server.keepAliveTimeout = 600000;
-  server.headersTimeout = 601000; 
+  server.headersTimeout = 601000;
 
 }
 
