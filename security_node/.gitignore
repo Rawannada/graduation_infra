@@ -1,0 +1,24 @@
+# Virtual environments
+gate/
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Reports / generated outputs
+*.report.json
+*.pipeline.report.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local env
+.env

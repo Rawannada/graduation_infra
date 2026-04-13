@@ -1,0 +1,4 @@
+Emp_ID,Name,Personal_Email,Phone_Number,SSN,Credit_Card_On_File
+001,John Doe,johndoe@gmail.com,+1-415-555-2671,123-45-6789,4111111111111111
+002,Jane Smith,jane.smith@yahoo.com,(212) 555-1234,987-65-4321,5555444433332222
+003,Admin User,admin@company.internal,,,

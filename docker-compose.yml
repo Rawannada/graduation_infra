@@ -15,7 +15,7 @@ services:
   # 2. خدمة فحص الملفات (Cyber Service - Python/Flask)
   cyber-service:
     build: 
-      context: ./cyber-security-service
+      context: ./security_node
     container_name: cyber_service_container
     ports:
       - "5000:5000"
