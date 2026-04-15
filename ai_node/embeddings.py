@@ -13,18 +13,14 @@ class EmbeddingGenerator:
         response = requests.post(
             self.url,
             json={"model": self.model_name, "prompt": text},
-            timeout=60
+            timeout=300,
         )
         if response.status_code == 200:
             return response.json()["embedding"]
         raise Exception(f"Ollama Error: {response.text}")
 
     def embed_documents(self, texts: list) -> list:
-        """
-        Embed multiple texts IN PARALLEL using ThreadPoolExecutor.
-        Old code used a sequential for-loop (1 request at a time).
-        New code sends up to max_workers requests at the same time — 3-4x faster.
-        """
+        """Embed multiple texts in parallel using ThreadPoolExecutor."""
         embeddings = [None] * len(texts)
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_index = {
@@ -44,12 +40,8 @@ class EmbeddingGenerator:
         response = requests.post(
             self.url,
             json={"model": self.model_name, "prompt": text},
-            timeout=60
+            timeout=60,
         )
         if response.status_code == 200:
             return response.json()["embedding"]
         raise Exception(f"Ollama Error: {response.text}")
-
-    @property
-    def embeddings(self):
-        return self

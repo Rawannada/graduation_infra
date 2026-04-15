@@ -1,12 +1,14 @@
 # Core LangChain
 langchain==0.3.12
 langchain-community==0.3.12
-langchain-core==0.3.31    # <- change this line
+langchain-core==0.3.31
 langchain-text-splitters==0.3.5
 langchain-ollama==0.2.2
 
-# Vector Store
+# Vector Store & Database
 faiss-cpu==1.9.0
+pymongo==4.10.1
+numpy==1.26.4
 
 # PDF Processing
 pypdf==4.1.0
@@ -15,18 +17,15 @@ pdf2image==1.17.0
 pytesseract==0.3.10
 Pillow==10.4.0
 
-# Ollama
+# Ollama & Network
 ollama>=0.4.4,<1.0.0
+requests==2.32.3
 
 # Text Processing
 nltk==3.9.1
 
 # Utilities
 python-dotenv==1.0.1
-
-# Optional: for GPU support
-# torch==2.1.0
-# torchvision==0.16.0
 
 # API Framework
 fastapi==0.115.0

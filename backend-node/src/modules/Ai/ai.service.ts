@@ -70,7 +70,10 @@ class AiService {
 
       const response = await axios.post(
         `${this.aiBaseUrl}/api/summarize`,
-        { filePath },
+        {
+          filePath,
+          fileId: String(fileId)
+        },
         {
           timeout: 600000,
           httpAgent: new http.Agent({ keepAlive: true }),
@@ -79,7 +82,6 @@ class AiService {
       );
 
       const summary = response.data.summary;
-      // const summary = "response.data.summaryyyyyyy lololololoooo";
 
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },
@@ -123,6 +125,7 @@ class AiService {
         {
           filePath,
           question,
+          fileId: String(fileId),
         },
         {
           timeout: 600000,
@@ -131,13 +134,6 @@ class AiService {
         },
       );
 
-      // const answer: string = `response.data.answer`;
-      // let sources = [
-      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 1 },
-      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 3 },
-      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 4 },
-      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 4 },
-      // ];
       const answer: string = response.data.answer;
       let sources: Source[] = response.data.sources;
 
