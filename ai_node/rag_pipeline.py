@@ -1,8 +1,6 @@
 import re
 import requests
-
 from vector_store import VectorStore
-
 
 class RAGPipeline:
     def __init__(self, vector_store: VectorStore, llm_model: str = "llama3"):
@@ -128,7 +126,9 @@ class RAGPipeline:
                     q, k=4, fetch_k=12, lambda_mult=0.75,
                 )
             else:
-                docs = [doc for _, doc in self.vector_store.search(q, k=4)]
+                # [FIX] Simplified extraction from tuple
+                search_results = self.vector_store.search(q, k=4)
+                docs = [doc for _, doc in search_results]
 
             for doc in docs:
                 key = f"{doc['source']}::{doc['page']}"
@@ -141,10 +141,17 @@ class RAGPipeline:
         if not relevant_docs:
             return self._not_found_response()
 
-        context = "\n\n".join([
-            f"[Source: {d['source']}, Page: {d['page']}]\n{d['text']}"
-            for d in relevant_docs
-        ])
+        # [MODIFICATION] Enhanced context string to include Section Titles
+        # This helps the LLM understand the structure of the document
+        context_parts = []
+        for d in relevant_docs:
+            header = f"[Source: {d['source']}, Page: {d['page']}"
+            if d.get("section_title"):
+                header += f", Section: {d['section_title']}"
+            header += "]"
+            context_parts.append(f"{header}\n{d['text']}")
+        
+        context = "\n\n".join(context_parts)
 
         keywords_all  = self._extract_keywords(question)
         acronym_hints = [
@@ -160,15 +167,15 @@ class RAGPipeline:
                 "Search for BOTH forms in the context.\n"
             )
 
+        # [MODIFICATION] Updated prompt to instruct the LLM to use section titles for better context
         prompt = f"""You are a helpful document assistant. Use the context below to answer the question.
 {hint_line}
 Rules:
 - Use ONLY the provided context. Do not use outside knowledge.
+- The context includes Section Titles; use them to understand the topic better.
 - You do NOT need a formal definition sentence. If the document discusses or describes the concept anywhere, summarise what it says.
-- Search for both the abbreviation AND the full name (e.g. both "WAN" and "Wide Area Network") — the document may use either form.
 - Always cite the page number(s), e.g. "(Page 5)".
 - If the question is about multiple topics, address each in its own paragraph.
-- Only say the topic is not covered if it is genuinely absent from every single context page provided.
 - Answer in the same language as the question.
 
 Context:

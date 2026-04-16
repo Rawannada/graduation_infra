@@ -8,7 +8,7 @@ import { useRef, useState } from "react";
 import axios from "axios";
 
 export default function Code() {
-  
+
   const navigate = useNavigate();
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const inputsRef = useRef([]);
@@ -22,7 +22,7 @@ export default function Code() {
     }
 
     try {
-     const response= await axios.patch("http://localhost:3000/users/confirmEmail", {
+      const response = await axios.patch("/api/users/confirmEmail", {
         email,
         OTP,
       });
@@ -51,9 +51,9 @@ export default function Code() {
 
   return (
     <Authlayout>
-    
 
-      <Authcard  width="498px" height="345px" marginBottom="77px">
+
+      <Authcard width="498px" height="345px" marginBottom="77px">
         <AuthHeader
           title="we emailed you a code"
           subtitle={`check your inbox at ${localStorage.getItem("email")}`}
@@ -111,7 +111,7 @@ export default function Code() {
           >
             <button
               onClick={() => window.open("https://mail.google.com", "_blank")}
-                            className="mini-btn"
+              className="mini-btn"
 
             >
               open gmail
@@ -126,15 +126,15 @@ export default function Code() {
         </form>
       </Authcard>
       <p style={{ width: "588px", textAlign: "center", color: "#707070" }}>
-        continuing as <br/>
-        email22@gmail.com<br/>
+        continuing as <br />
+        email22@gmail.com<br />
         log in with another email here
 
 
 
 
       </p>
-    
+
     </Authlayout>
   );
 }

@@ -10,7 +10,7 @@ import axios from "axios";
 import AuthForm from "./AuthForm";
 
 export default function Login() {
-    const [loading, setLoading] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
   const navigate = useNavigate();
   let user = {
     email: "",
@@ -23,25 +23,25 @@ export default function Login() {
       email: Yup.string()
         .email("Invalid email address")
         .required("Email is required"),
-       password: Yup.string()
-          .matches(
-            /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/, 
-            "Password must be at least 8 characters, include letters and numbers"
-          )
-          .required("Password is required"),
+      password: Yup.string()
+        .matches(
+          /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/,
+          "Password must be at least 8 characters, include letters and numbers"
+        )
+        .required("Password is required"),
     }),
     onSubmit: async (values, { setSubmitting }) => {
       setLoading(true);
       try {
         const response = await axios.post(
-          "http://localhost:3000/users/signIn",
+          "/users/signIn",
           values,
         );
         // لو الدخول ناجح
         console.log(response.data);
         window.alert("Login successful!");
         localStorage.setItem("accessToken", response.data.accessToken);
-          navigate("/home");
+        navigate("/home");
         // ممكن تخزن التوكن أو تعمل redirect
         // localStorage.setItem("token", response.data.token);
         // navigate("/dashboard");
@@ -49,7 +49,7 @@ export default function Login() {
         console.error(error);
         window.alert(
           error.response?.data?.message ||
-            "Login failed. Check your credentials.",
+          "Login failed. Check your credentials.",
         );
       } finally {
         setSubmitting(false);
@@ -74,7 +74,7 @@ export default function Login() {
             value={login.values.email}
             onChange={login.handleChange}
             onBlur={login.handleBlur}
-             className="auth-input"
+            className="auth-input"
             type="email"
             placeholder="email address"
           />
@@ -88,7 +88,7 @@ export default function Login() {
             value={login.values.password}
             onChange={login.handleChange}
             onBlur={login.handleBlur}
-             className="auth-input"
+            className="auth-input"
             type="password"
             placeholder="password"
           />
@@ -99,9 +99,9 @@ export default function Login() {
           )}
 
           <div
-           className="auth-links"
+            className="auth-links"
           >
-            <span  onClick={() => navigate("/forgotpass")}>forgot password?</span>
+            <span onClick={() => navigate("/forgotpass")}>forgot password?</span>
             <span
               onClick={() => navigate("/signup")}
               style={{ cursor: "pointer", color: "#113567", fontWeight: "500" }}
@@ -110,9 +110,9 @@ export default function Login() {
             </span>
           </div>
           <button type="submit" className="auth-button" disabled={loading}>
-  {loading ? "Logging in..." : "Log In"}
-</button>
-         
+            {loading ? "Logging in..." : "Log In"}
+          </button>
+
         </form>
       </Authcard>
       <p style={{ width: "588px", textAlign: "center", color: "#707070" }}>

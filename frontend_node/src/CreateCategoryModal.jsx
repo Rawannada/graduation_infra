@@ -51,7 +51,7 @@ export default function CreateCategoryModal({
     try {
       setIsLoading(true);
       const res = await fetch(
-        `http://localhost:3000/upload/addCategory/${file._id}`,
+        `/api/upload/addCategory/${file._id}`,
         {
           method: "POST",
           headers: {
@@ -101,7 +101,7 @@ export default function CreateCategoryModal({
 
         {/* الحاوية الرئيسية للقائمة */}
         <div className={`category-list ${selectedOption ? "open" : ""}`}>
-          
+
           {/* 1. خيار General - ثابت لا يتحرك */}
           <div
             className={`general-option ${selectedOptionType === "general" ? "selected" : ""}`}
@@ -206,7 +206,7 @@ const styles = {
     justifyContent: "space-between",
     marginTop: "20px",
   },
-scrollArea: { 
+  scrollArea: {
     maxHeight: "200px", // حدد الارتفاع اللي تحبه للجزء اللي بيعمل سكرول
     overflowY: "auto",
   }

@@ -1,29 +1,19 @@
 import sys
 import asyncio
 import threading
-import pickle
-import hashlib
 import logging
+import numpy as np
+import httpx
+import io
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
+from pypdf import PdfReader
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. SETUP LOGGING
-# ─────────────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("AI_SERVER")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. LIBRARY PATHS
-# ─────────────────────────────────────────────────────────────────────────────
+# الإعدادات
 sys.path.append(str(Path(__file__).parent))
 sys.path.append(str(Path(__file__).parent / "pdf_summarizer" / "src"))
 
@@ -41,24 +31,24 @@ try:
 except ImportError:
     from src.chunker import split_into_chunks
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("AI_SERVER")
+
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 executor = ThreadPoolExecutor(max_workers=4)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. PATHS & REGISTRY
-# ─────────────────────────────────────────────────────────────────────────────
+
 WSL_BASE_PATH = Path(r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node")
+
+
+WORKER_URLS: List[str] = [
+    # "http://192.168.1.XX:8001", 
+]
 
 vector_stores: Dict[str, VectorStore] = {}
 vs_building: set = set()
+_vs_lock = threading.Lock()
 
 class SummarizeRequest(BaseModel):
     filePath: str
@@ -69,46 +59,143 @@ class QuestionRequest(BaseModel):
     question: str
     fileId: str = None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. PATH RESOLVER
-# ─────────────────────────────────────────────────────────────────────────────
 def _get_clean_path(raw_path: str) -> Path:
     p = Path(raw_path)
     parts = p.parts
-
-    if "uploads" in parts:
-        index = parts.index("uploads")
-        relative_path = Path(*parts[index:])
-    else:
-        relative_path = Path("uploads") / p.name
-
+    idx = parts.index("uploads") if "uploads" in parts else -1
+    relative_path = Path(*parts[idx:]) if idx != -1 else Path("uploads") / p.name
     file_path = WSL_BASE_PATH.joinpath(relative_path).resolve()
-    
     if not file_path.exists():
-        logger.error(f"File system check failed: {file_path}")
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-
     return file_path
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. VECTOR STORE LOGIC
-# ─────────────────────────────────────────────────────────────────────────────
-def _get_or_build_vector_store(file_path: Path, cache_key: str) -> None:
-    if cache_key in vector_stores:
-        return
+def _split_pages(total_pages: int, num_workers: int) -> List[tuple]:
+    chunk_size = total_pages // num_workers
+    ranges = []
+    start = 0
+    for i in range(num_workers):
+        end = start + chunk_size if i < num_workers - 1 else total_pages
+        ranges.append((start, end))
+        start = end
+    return ranges
 
+# ─────────────────────────────────────────────────────────────────────────────
+# التعديل الجوهري: إرسال الملف كـ Stream
+# ─────────────────────────────────────────────────────────────────────────────
+async def _call_worker(worker_url: str, file_path: Path, start: int, end: int) -> dict:
+    async with httpx.AsyncClient(timeout=600) as client:
+        logger.info(f"إرسال Streaming للملف إلى {worker_url} (صفحة {start} → {end})")
+        
+        # نفتح الملف ونبعته في الطلب
+        with open(file_path, "rb") as f:
+            files = {'file': (file_path.name, f, 'application/pdf')}
+            data = {'startPage': str(start), 'endPage': str(end)}
+            
+            response = await client.post(
+                f"{worker_url}/process",
+                files=files,
+                data=data
+            )
+        
+        if response.status_code != 200:
+            logger.error(f"فشل الوركير {worker_url}: {response.text}")
+            response.raise_for_status()
+            
+        return response.json()
+
+def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
+    from embeddings import EmbeddingGenerator
+    processor = PDFProcessor(str(file_path))
+    pages_data = processor.process_pdf(use_ocr=False, use_sections=True, start_page=start, end_page=end)
+
+    chunked_data = []
+    for section in pages_data:
+        chunks = split_into_chunks(section["text"], max_words=100)
+        for chunk in chunks:
+            chunked_data.append({
+                "text": chunk,
+                "filename": section["filename"],
+                "page_num": section["page_num"],
+                "source": section.get("source", section["filename"]),
+                "section_title": section.get("section_title", ""),
+            })
+
+    if not chunked_data: return {"documents": [], "vectors": [], "raw_vectors": []}
+
+    gen = EmbeddingGenerator(max_workers=4)
+    texts = [c["text"] for c in chunked_data]
+    embeddings = gen.embed_documents(texts)
+    emb_np = np.array(embeddings).astype("float32")
+    
+    norms = np.linalg.norm(emb_np, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    normalized = emb_np / norms
+
+    return {"documents": chunked_data, "vectors": normalized.tolist(), "raw_vectors": emb_np.tolist()}
+
+def _merge_result_into_store(vs: VectorStore, result: dict) -> None:
+    import faiss
+    documents = result.get("documents", [])
+    raw_vectors = result.get("raw_vectors", [])
+    vectors = result.get("vectors", [])
+
+    if not documents or not raw_vectors: return
+
+    raw_np = np.array(raw_vectors).astype("float32")
+    norm_np = np.array(vectors).astype("float32")
+    
+    if vs.index is None:
+        vs.index = faiss.IndexFlatL2(raw_np.shape[1])
+        vs.documents = []
+        vs.vectors = None
+
+    vs.index.add(raw_np)
+    vs.documents.extend(documents)
+    vs.vectors = np.vstack([vs.vectors, norm_np]) if vs.vectors is not None else norm_np
+
+async def _distribute_and_build(file_path: Path, cache_key: str, file_id: str) -> None:
+    try:
+        reader = PdfReader(str(file_path))
+        total_pages = len(reader.pages)
+        num_total = len(WORKER_URLS) + 1
+        page_ranges = _split_pages(total_pages, num_total)
+        
+        local_range = page_ranges[-1]
+        worker_ranges = page_ranges[:-1]
+
+        # تشغيل الأصحاب
+        worker_tasks = [
+            _call_worker(WORKER_URLS[i], file_path, worker_ranges[i][0], worker_ranges[i][1])
+            for i in range(len(WORKER_URLS))
+        ]
+
+        # تشغيل جهازك
+        loop = asyncio.get_event_loop()
+        local_future = loop.run_in_executor(executor, _build_local_partial, file_path, local_range[0], local_range[1])
+
+        worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+        local_result = await local_future
+
+        vs = VectorStore(max_workers=4)
+        _merge_result_into_store(vs, local_result)
+
+        for i, result in enumerate(worker_results):
+            if isinstance(result, Exception): continue
+            _merge_result_into_store(vs, result)
+
+        vs.save(cache_key)
+        vector_stores[cache_key] = vs
+    finally:
+        vs_building.discard(cache_key)
+
+def _build_solo(file_path: Path, cache_key: str) -> None:
     vs = VectorStore(max_workers=4)
-
     if vs.load(cache_key):
         vector_stores[cache_key] = vs
-        logger.info(f"Successfully loaded store from disk for ID: {cache_key}")
         return
-
     try:
-        logger.info(f"Building fresh Vector Store for: {file_path.name}")
         processor = PDFProcessor(str(file_path))
         pages_data = processor.process_pdf(use_ocr=False, use_sections=True)
-
         chunked_data = []
         for section in pages_data:
             chunks = split_into_chunks(section["text"], max_words=100)
@@ -120,117 +207,55 @@ def _get_or_build_vector_store(file_path: Path, cache_key: str) -> None:
                     "source": section.get("source", section["filename"]),
                     "section_title": section.get("section_title", ""),
                 })
-
-        logger.info(f"Generated {len(chunked_data)} chunks for indexing.")
         vs.create_vector_store(chunked_data, cache_source=cache_key)
         vector_stores[cache_key] = vs
-        logger.info(f"Vector Store creation complete: {cache_key}")
-
-    except Exception as e:
-        logger.error(f"Vector building failure: {str(e)}")
     finally:
         vs_building.discard(cache_key)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. LIFECYCLE EVENTS
-# ─────────────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
-def _preload_caches() -> None:
-    def _load_all():
-        index_files = list(CACHE_DIR.glob("*.index"))
-        logger.info(f"Scanning cache directory: {CACHE_DIR}")
-        for index_file in index_files:
-            try:
-                cache_id = index_file.stem
-                vs = VectorStore(max_workers=4)
-                if vs.load(cache_id):
-                    vector_stores[cache_id] = vs
-            except Exception as e:
-                logger.warning(f"Failed to preload {index_file.name}: {e}")
-        logger.info(f"Startup complete. Memory registry contains {len(vector_stores)} stores.")
-
-    threading.Thread(target=_load_all, daemon=True).start()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. ROUTES
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/")
-async def root():
-    return {"status": "healthy", "nodes_loaded": len(vector_stores)}
+def _preload_caches():
+    def _load():
+        for f in CACHE_DIR.glob("*.index"):
+            vs = VectorStore(max_workers=4)
+            if vs.load(f.stem): vector_stores[f.stem] = vs
+    threading.Thread(target=_load, daemon=True).start()
 
 @app.post("/api/summarize")
-def summarize(request: SummarizeRequest):
-    logger.info("--- SUMMARIZE REQUEST START ---")
-    logger.debug(f"Payload: {request.model_dump()}")
+async def summarize(request: SummarizeRequest):
+    file_path = _get_clean_path(request.filePath)
+    cache_key = request.fileId or _cache_key(str(file_path))
     
-    try:
-        file_path = _get_clean_path(request.filePath)
-        cache_key = request.fileId if request.fileId else _cache_key(str(file_path))
-        
-        logger.info(f"Processing File: {file_path.name} | Cache Key: {cache_key}")
+    summarizer = PDFSummarizer()
+    summary = summarizer.summarize(str(file_path))
 
-        summarizer = PDFSummarizer()
-        summary_result = summarizer.summarize(str(file_path))
-
+    with _vs_lock:
         if cache_key not in vector_stores and cache_key not in vs_building:
             vs_building.add(cache_key)
-            threading.Thread(
-                target=_get_or_build_vector_store, 
-                args=(file_path, cache_key), 
-                daemon=True
-            ).start()
+            if WORKER_URLS:
+                asyncio.create_task(_distribute_and_build(file_path, cache_key, cache_key))
+            else:
+                threading.Thread(target=_build_solo, args=(file_path, cache_key), daemon=True).start()
 
-        return {
-            "status": "success",
-            "summary": summary_result,
-            "metadata": {"filename": file_path.name, "cache_key": cache_key},
-        }
-    except Exception as e:
-        logger.error(f"Summarize API Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "success", "summary": summary, "metadata": {"cache_key": cache_key}}
 
 @app.post("/api/ask")
 async def ask(request: QuestionRequest):
-    logger.info("--- ASK REQUEST START ---")
-    try:
-        if not request.question.strip():
-            raise HTTPException(status_code=400, detail="Empty question")
-        
-        file_path = _get_clean_path(request.filePath)
-        cache_key = request.fileId if request.fileId else _cache_key(str(file_path))
+    file_path = _get_clean_path(request.filePath)
+    cache_key = request.fileId or _cache_key(str(file_path))
+    
+    wait = 0
+    while cache_key in vs_building and wait < 60:
+        await asyncio.sleep(1)
+        wait += 1
 
-        # Wait if building is in progress
-        wait_count = 0
-        while cache_key in vs_building and wait_count < 60:
-            logger.info(f"Waiting for VectorStore {cache_key} to finish building... {wait_count}s")
-            await asyncio.sleep(1)
-            wait_count += 1
-
-        if cache_key not in vector_stores:
-            logger.info(f"Cache miss for {cache_key}. Triggering manual build.")
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(executor, _get_or_build_vector_store, file_path, cache_key)
-
-        if cache_key not in vector_stores:
-            raise HTTPException(status_code=500, detail="Vector Store initialization failed")
-
-        logger.info(f"Querying RAG Pipeline for ID: {cache_key}")
-        rag = RAGPipeline(vector_store=vector_stores[cache_key])
-        
+    if cache_key not in vector_stores:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, rag.query, request.question)
+        await loop.run_in_executor(executor, _build_solo, file_path, cache_key)
 
-        logger.info(f"Successfully generated answer. Sources found: {len(result.get('sources', []))}")
-        
-        return {
-            "status": "success",
-            "answer": result.get("answer", ""),
-            "sources": result.get("sources", []),
-        }
-    except Exception as e:
-        logger.error(f"Ask API Exception: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    rag = RAGPipeline(vector_store=vector_stores[cache_key])
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, rag.query, request.question)
+    return {"status": "success", **result}
 
 if __name__ == "__main__":
     import uvicorn

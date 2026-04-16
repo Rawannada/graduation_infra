@@ -51,7 +51,7 @@ export default function Sidebar() {
     const token = localStorage.getItem("accessToken");
 
     try {
-      await fetch("http://localhost:3000/logout", {
+      await fetch("/api/logout", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -73,7 +73,7 @@ export default function Sidebar() {
   useEffect(() => {
     async function fetchRecent() {
       try {
-        const res = await fetch("http://localhost:3000/upload/recent", {
+        const res = await fetch("/api/upload/recent", {
           headers: { Authorization: `bearer ${accessToken}` },
         });
         const data = await res.json();
@@ -111,7 +111,7 @@ export default function Sidebar() {
       formData.append("file", file);
 
       try {
-        const res = await fetch("http://localhost:3000/upload/", {
+        const res = await fetch("/api/upload/", {
           method: "POST",
           body: formData,
           headers: {
@@ -373,7 +373,7 @@ export default function Sidebar() {
                                     localStorage.getItem("accessToken");
 
                                   const res = await fetch(
-                                    `http://localhost:3000/upload/delete/${fileId}`,
+                                    `/api/upload/delete/${fileId}`,
                                     {
                                       method: "DELETE",
                                       headers: {

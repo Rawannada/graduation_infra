@@ -66,7 +66,7 @@ export default function Home() {
   useEffect(() => {
     async function fetchRecent() {
       try {
-        const res = await fetch("http://localhost:3000/upload/recent", {
+        const res = await fetch("/api/upload/recent", {
           headers: { Authorization: `bearer ${accessToken}` },
         });
         const data = await res.json();
@@ -93,7 +93,7 @@ export default function Home() {
     formData.append("file", file);
 
     try {
-      const res = await fetch("http://localhost:3000/upload/", {
+      const res = await fetch("/api/upload/", {
         method: "POST",
         body: formData,
         headers: {
@@ -150,7 +150,7 @@ export default function Home() {
     try {
       const currentFile = files[files.length - 1];
       const fileId = currentFile?._id;
-      const res = await fetch(`http://localhost:3000/security/scan/${fileId}`, {
+      const res = await fetch(`/api/security/scan/${fileId}`, {
         method: "POST",
         headers: {
           Authorization: `bearer ${accessToken}`,
@@ -186,7 +186,7 @@ export default function Home() {
           // رفع الملف
           const formData = new FormData();
           formData.append("file", file);
-          const res = await fetch("http://localhost:3000/upload/", {
+          const res = await fetch("/api/upload/", {
             method: "POST",
             body: formData,
             headers: {
@@ -206,7 +206,7 @@ export default function Home() {
 
           // عمل scan مباشر
           const scanRes = await fetch(
-            `http://localhost:3000/security/scan/${data.pdf._id}`,
+            `/api/security/scan/${data.pdf._id}`,
             {
               method: "POST",
               headers: { Authorization: `bearer ${accessToken}` },
@@ -285,7 +285,7 @@ export default function Home() {
   useEffect(() => {
     async function fetchCategories() {
       try {
-        const res = await fetch("http://localhost:3000/upload/categories", {
+        const res = await fetch("/api/upload/categories", {
           headers: {
             Authorization: `bearer ${accessToken}`,
           },

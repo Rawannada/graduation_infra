@@ -6,7 +6,7 @@ export default function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  
+
   useEffect(() => {
     const accessToken = localStorage.getItem("accessToken");
     if (!accessToken) {
@@ -15,7 +15,7 @@ export default function AuthProvider({ children }) {
       return;
     }
 
-    fetch("http://localhost:3000/users/profile", {
+    fetch("/api/users/profile", {
       headers: {
         Authorization: `bearer ${accessToken}`,
       },
@@ -26,7 +26,7 @@ export default function AuthProvider({ children }) {
       })
       .then((data) => {
         setUser(data.user);
-        console.log("profile:",data)
+        console.log("profile:", data)
       })
       .catch((err) => {
         console.log(err);

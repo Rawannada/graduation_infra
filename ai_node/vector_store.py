@@ -14,7 +14,6 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 
 def _cache_key(source: str) -> str:
-
     if len(source) == 24 and all(c in "0123456789abcdefABCDEF" for c in source):
         return source
     return hashlib.md5(str(source).encode()).hexdigest()
@@ -25,7 +24,6 @@ class VectorStore:
         self.embedding_generator = EmbeddingGenerator(max_workers=max_workers)
         self.index = None
         self.documents = []
-        # Normalised vectors stored for cosine similarity inside MMR / hybrid search
         self.vectors = None
 
     # ─────────────────────────────────────────
@@ -37,7 +35,7 @@ class VectorStore:
             print("⚠️ Nothing to save – index is empty.")
             return
 
-        key = _cache_key(cache_source)
+        key        = _cache_key(cache_source)
         index_path = CACHE_DIR / f"{key}.index"
         meta_path  = CACHE_DIR / f"{key}.meta"
 
@@ -57,7 +55,7 @@ class VectorStore:
         print(f"💾 [CACHE] Saved vector store → {index_path.name}")
 
     def load(self, cache_source: str) -> bool:
-        key = _cache_key(cache_source)
+        key        = _cache_key(cache_source)
         index_path = CACHE_DIR / f"{key}.index"
         meta_path  = CACHE_DIR / f"{key}.meta"
 
@@ -92,11 +90,14 @@ class VectorStore:
             return
 
         texts = [p["text"] for p in valid_pages]
+
+        # [FIX] حفظ section_title جوه الـ documents عشان الـ RAG pipeline يقدر يستخدمه
         self.documents = [
             {
-                "text":   p["text"],
-                "source": p["filename"],
-                "page":   p["page_num"],
+                "text":          p["text"],
+                "source":        p["filename"],
+                "page":          p["page_num"],
+                "section_title": p.get("section_title", ""),
             }
             for p in valid_pages
         ]
@@ -105,7 +106,6 @@ class VectorStore:
         embeddings    = self.embedding_generator.embed_documents(texts)
         embeddings_np = np.array(embeddings).astype("float32")
 
-        # Normalise and store for cosine similarity in MMR / keyword-boost search
         norms = np.linalg.norm(embeddings_np, axis=1, keepdims=True)
         norms[norms == 0] = 1
         self.vectors = embeddings_np / norms
@@ -118,7 +118,44 @@ class VectorStore:
         if cache_source:
             self.save(cache_source)
 
-  
+    # ─────────────────────────────────────────
+    # Distributed Processing Helper
+    # ─────────────────────────────────────────
+
+    def merge_with(self, other_store: "VectorStore") -> None:
+        """
+        يدمج الـ VectorStore القادم من worker تاني (partial index)
+        مع الـ index الحالي.
+        يشتغل مع IndexFlatL2 عن طريق reconstruct_n بدل merge_from
+        اللي بتشتغل بس مع IndexIVF.
+        """
+        if other_store.index is None or other_store.index.ntotal == 0:
+            return
+
+        n = other_store.index.ntotal
+        d = other_store.index.d
+
+        # [FIX] استخدام reconstruct_n بدل merge_from لأن IndexFlatL2 مش بيدعمها
+        other_vecs = np.zeros((n, d), dtype="float32")
+        other_store.index.reconstruct_n(0, n, other_vecs)
+
+        if self.index is None:
+            self.index     = faiss.IndexFlatL2(d)
+            self.documents = []
+            self.vectors   = None
+
+        self.index.add(other_vecs)
+        self.documents.extend(other_store.documents)
+
+        if self.vectors is not None and other_store.vectors is not None:
+            self.vectors = np.vstack([self.vectors, other_store.vectors])
+        elif other_store.vectors is not None:
+            self.vectors = other_store.vectors
+
+    # ─────────────────────────────────────────
+    # Search methods
+    # ─────────────────────────────────────────
+
     def search(self, query: str, k: int = 4) -> list:
         if self.index is None:
             return []

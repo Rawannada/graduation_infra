@@ -8,7 +8,7 @@ import {
   PanelLeft,
   ArrowUp,
   Plus,
-    Brain, CheckCircle , Sparkle
+  Brain, CheckCircle, Sparkle
 } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { ClipLoader } from "react-spinners";
@@ -27,7 +27,7 @@ export default function Chat() {
   const [message, setMessage] = useState("");
   const [summary, setSummary] = useState(null);
   const [loadingStep, setLoadingStep] = useState("");
-const [thinkingStep, setThinkingStep] = useState("");
+  const [thinkingStep, setThinkingStep] = useState("");
   const location = useLocation();
   const [summaryError, setSummaryError] = useState(false);
   const { fileUrl, fileId } = location.state || {};
@@ -41,7 +41,7 @@ const [thinkingStep, setThinkingStep] = useState("");
     setMessage("");
 
     try {
-      const res = await fetch(`http://localhost:3000/ai/summarize/${fileId}`, {
+      const res = await fetch(`/api/ai/summarize/${fileId}`, {
         method: "POST",
         headers: {
           Authorization: `bearer ${accessToken}`,
@@ -66,57 +66,57 @@ const [thinkingStep, setThinkingStep] = useState("");
   };
 
   // ask question
-async function sendQuestion() {
-  if (!question.trim()) return;
+  async function sendQuestion() {
+    if (!question.trim()) return;
 
-  setMessages((prev) => [...prev, { role: "user", content: question }]);
+    setMessages((prev) => [...prev, { role: "user", content: question }]);
 
-  const currentQuestion = question;
-  setQuestion("");
+    const currentQuestion = question;
+    setQuestion("");
 
-  setLoading(true);
+    setLoading(true);
 
-  try {
-    // ثابتة
-    setLoadingStep("Reading the file");
+    try {
+      // ثابتة
+      setLoadingStep("Reading the file");
 
-    await new Promise((r) => setTimeout(r, 700));
+      await new Promise((r) => setTimeout(r, 700));
 
-    // المتغيرة
-    setThinkingStep("Thinking...");
+      // المتغيرة
+      setThinkingStep("Thinking...");
 
-    const res = await fetch(`http://localhost:3000/ai/ask/${fileId}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ question: currentQuestion }),
-    });
+      const res = await fetch(`/api/ai/ask/${fileId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ question: currentQuestion }),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    // التحويل هنا
-    setThinkingStep("Finished thinking...");
+      // التحويل هنا
+      setThinkingStep("Finished thinking...");
 
-    await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 500));
 
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: data.answer || "No answer found" },
-    ]);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.answer || "No answer found" },
+      ]);
 
-  } catch (err) {
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: "Error retrieving answer" },
-    ]);
-  } finally {
-    setLoading(false);
-    setLoadingStep("");
-    setThinkingStep("");
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Error retrieving answer" },
+      ]);
+    } finally {
+      setLoading(false);
+      setLoadingStep("");
+      setThinkingStep("");
+    }
   }
-}
   // async function sendQuestion() {
   //   if (!question.trim()) return;
 
@@ -161,7 +161,7 @@ async function sendQuestion() {
   const fetchChatHistory = async () => {
     if (!fileId) return;
     try {
-      const res = await fetch(`http://localhost:3000/ai/chat/${fileId}`, {
+      const res = await fetch(`/api/ai/chat/${fileId}`, {
         headers: { Authorization: `bearer ${accessToken}` },
       });
       if (!res.ok) {
@@ -282,25 +282,25 @@ async function sendQuestion() {
                   )}
               </div>
             ))}
-         {loading && (
-  <div className="message assistant loading-box">
-    
-    <div className="step">
-      <FileText size={16} />
-      <span>{loadingStep}</span>
-    </div>
+            {loading && (
+              <div className="message assistant loading-box">
 
-    <div className="step">
-      {thinkingStep === "Finished thinking..." ? (
-        < Sparkle size={20} />
-      ) : (
-        <Brain size={16} />
-      )}
-      <span>{thinkingStep}</span>
-    </div>
+                <div className="step">
+                  <FileText size={16} />
+                  <span>{loadingStep}</span>
+                </div>
 
-  </div>
-)}
+                <div className="step">
+                  {thinkingStep === "Finished thinking..." ? (
+                    < Sparkle size={20} />
+                  ) : (
+                    <Brain size={16} />
+                  )}
+                  <span>{thinkingStep}</span>
+                </div>
+
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
           <div className="textbox">
@@ -365,7 +365,7 @@ async function sendQuestion() {
                 <ChevronRight size={17} />
               </button>
             </div> */}
-            <div  className="showfile">
+            <div className="showfile">
               {fileUrl ? (
                 <iframe
                   src={fileUrl}

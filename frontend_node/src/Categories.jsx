@@ -25,7 +25,7 @@ export default function () {
   }
   async function fetchCategories() {
     try {
-      const res = await fetch("http://localhost:3000/upload/categories", {
+      const res = await fetch("/api/upload/categories", {
         headers: {
           Authorization: `bearer ${localStorage.getItem("accessToken")}`,
         },
@@ -42,7 +42,7 @@ export default function () {
   async function handleDelete(categoryId) {
     try {
       const res = await fetch(
-        `http://localhost:3000/upload/category/${categoryId}`,
+        `/api/upload/category/${categoryId}`,
         {
           method: "DELETE",
           headers: {
@@ -66,7 +66,8 @@ export default function () {
     }
   }
   function handleClickCategory(cat) {
-navigate(`/category-files/${cat._id}/${cat.categoryName}`);  }
+    navigate(`/category-files/${cat._id}/${cat.categoryName}`);
+  }
   async function handleAddCategory(newCategory) {
     setShowModal(false);
     await fetchCategories();
