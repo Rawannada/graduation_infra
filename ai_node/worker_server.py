@@ -1,15 +1,16 @@
 import logging
 import numpy as np
 import io
+import sys
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-# نفس الملفات اللي عند رواند
+# Project internal imports
 from pdf_processor import PDFProcessor
 from embeddings import EmbeddingGenerator
 
-# محاولة عمل import للـ chunker من المسارات الممكنة
+# handling for chunker
 try:
     from pdf_summarizer.src.chunker import split_into_chunks
 except ImportError:
@@ -18,13 +19,24 @@ except ImportError:
     except ImportError:
         from src.chunker import split_into_chunks
 
+# Attempt to import PDFSummarizer
+try:
+    from pdf_summarizer.src.summarizer import PDFSummarizer
+except ImportError:
+    try:
+        from summarizer import PDFSummarizer
+    except ImportError:
+        PDFSummarizer = None
+
+# Configure Instant Logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("WORKER")
+logger = logging.getLogger("WORKER_NODE")
 
-app = FastAPI()
+app = FastAPI(title="Distributed Processing Worker")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,87 +45,120 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize engines
 embedding_generator = EmbeddingGenerator(max_workers=4)
+summarizer_engine = PDFSummarizer() if PDFSummarizer else None
 
 @app.get("/")
-def root():
-    return {"status": "worker_ready"}
+def health_check():
+    return {
+        "status": "ready", 
+        "capabilities": ["vectorization", "summarization" if summarizer_engine else "none"]
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# التعديل: استبدال الـ JSON بـ UploadFile و Form لتمكين الـ Streaming
+# Distributed Summarization
 # ─────────────────────────────────────────────────────────────────────────────
-@app.post("/process")
-async def process(
-    file: UploadFile = File(...),      # استلام الملف كـ Bytes
-    startPage: int = Form(...),        # الصفحة اللي هيبدأ منها
-    endPage: int = Form(...)           # الصفحة اللي هيوقف عندها
+@app.post("/process_summary")
+async def process_summary_fragment(
+    file: UploadFile = File(...),
+    startPage: int = Form(...),
+    endPage: int = Form(...)
 ):
-    """
-    بيستقبل جزء من الـ PDF كـ Stream ويرجع النتيجة.
-    """
-    logger.info(
-        f"استلمت ملف: {file.filename} "
-        f"(صفحة {startPage} → {endPage})"
-    )
+    if not summarizer_engine:
+        logger.error("Summarizer engine not found on this worker.")
+        raise HTTPException(status_code=501, detail="Summarization module not installed on worker.")
 
+    logger.info(f"Task Started: Summarizing {file.filename} | Pages {startPage}-{endPage}")
+    
     try:
-        # 1. قراءة محتوى الملف في الذاكرة (RAM) وتحويله لـ BytesIO
         file_content = await file.read()
         pdf_stream = io.BytesIO(file_content)
-        # بنعطي الـ stream اسم عشان الـ processor يعرفه
-        pdf_stream.name = file.filename
-
-        # 2. استخراج النص باستخدام الـ Processor (النسخة اللي عدلناها للـ Bytes)
         processor = PDFProcessor(pdf_stream)
+        pages_data = processor.process_pdf(start_page=startPage, end_page=endPage)
+        
+        text_chunks = []
+        for page in pages_data:
+            if page["text"].strip():
+                chunks = split_into_chunks(page["text"], max_words=200)
+                text_chunks.extend(chunks)
+
+        if not text_chunks:
+            return {"partial_summary": ""}
+
+        # تأكدي إن الدالة دي موجودة في ملف summarizer.py عندك
+        partial_summary, _ = summarizer_engine.summarize_text_with_ollama(
+            text_chunks=text_chunks,
+            model_name=summarizer_engine.model_name,
+            temperature=0.1,
+            max_tokens=512
+        )
+        
+        logger.info(f"Task Completed: Summary generated for pages {startPage}-{endPage}")
+        return {"partial_summary": partial_summary}
+
+    except Exception as e:
+        logger.error(f"Summarization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vectorization (التعديل لضمان الدمج في الـ Manager)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/process")
+async def process_vectors(
+    file: UploadFile = File(...),
+    startPage: int = Form(...),
+    endPage: int = Form(...)
+):
+    logger.info(f"Task Started: Vectorizing {file.filename} | Pages {startPage}-{endPage}")
+
+    try:
+        file_content = await file.read()
+        pdf_stream = io.BytesIO(file_content)
+        processor = PDFProcessor(pdf_stream)
+        
+        # استخراج الصفحات المطلوبة فقط
         pages_data = processor.process_pdf(
-            use_ocr=False,
-            use_sections=True,
-            start_page=startPage,
-            end_page=endPage,
+            use_ocr=False, 
+            use_sections=True, 
+            start_page=startPage, 
+            end_page=endPage
         )
 
         if not pages_data:
-            logger.warning("مفيش نص اتستخرج من الصفحات دي")
-            return {"documents": [], "vectors": [], "raw_vectors": []}
+            return {"chunks": [], "embeddings": [], "documents": []}
 
-        # 3. تقطيع النص لـ chunks
         chunked_data = []
         for section in pages_data:
             chunks = split_into_chunks(section["text"], max_words=100)
             for chunk in chunks:
                 chunked_data.append({
-                    "text":           chunk,
-                    "filename":      section["filename"],
-                    "page_num":      section["page_num"],
-                    "source":        section.get("source", section["filename"]),
+                    "text": chunk,
+                    "filename": section.get("filename", file.filename),
+                    "page_num": section.get("page_num", 0),
                     "section_title": section.get("section_title", ""),
                 })
 
-        logger.info(f"تم تقطيع النص لـ {len(chunked_data)} chunk")
-
-        # 4. عمل الـ embeddings
+        # توليد الـ Embeddings
         texts = [c["text"] for c in chunked_data]
         embeddings = embedding_generator.embed_documents(texts)
         emb_np = np.array(embeddings).astype("float32")
 
-        # 5. تنسيب الـ vectors (normalized)
-        norms = np.linalg.norm(emb_np, axis=1, keepdims=True)
-        norms[norms == 0] = 1
-        normalized = emb_np / norms
+        logger.info(f"Task Completed: Generated {len(embeddings)} vectors.")
 
-        logger.info(f"تم عمل الـ embeddings بنجاح ({len(embeddings)} vector)")
-
+        # بنرجع chunks و documents بنفس القيمة لضمان التوافق مع الـ Manager
         return {
-            "documents":   chunked_data,
-            "vectors":      normalized.tolist(),
-            "raw_vectors": emb_np.tolist(),
+            "status": "success",
+            "chunks": chunked_data,
+            "documents": chunked_data, 
+            "embeddings": emb_np.tolist()
         }
 
     except Exception as e:
-        logger.error(f"خطأ في المعالجة عند الوركير: {str(e)}")
+        logger.error(f"Vectorization failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    # التأكد من تشغيل السيرفر على 0.0.0.0 للسماح بالاتصال عبر الشبكة
+    # البورت 8001 هو بورت الوركر الثابت في كود المدير
     uvicorn.run(app, host="0.0.0.0", port=8001)

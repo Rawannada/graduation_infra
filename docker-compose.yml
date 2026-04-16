@@ -2,33 +2,28 @@ version: '3.8'
 
 services:
 
-  # 1. قاعدة البيانات (MongoDB)
+ 
   mongodb:
     image: mongo:latest
     container_name: mongodb_container
-    # بدون ports - محدش يوصلها من برا غير الـ backend من جوا
     volumes:
       - mongo_data:/data/db
     networks:
       - deepguard-network
 
-  # 2. خدمة فحص الملفات (Cyber Service)
   cyber-service:
     build:
       context: ./security_node
     container_name: cyber_service_container
-    # بدون ports - بس الـ backend يكلمه من جوا
     volumes:
       - ./backend-node/uploads:/app/uploads
     networks:
       - deepguard-network
 
-  # 3. الباك-إند (Node.js)
   backend:
     build:
       context: ./backend-node
     container_name: deepguard_backend
-    # بدون ports - بس Nginx يكلمه من جوا
     volumes:
       - ./backend-node:/app
       - /app/node_modules
@@ -37,7 +32,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      # الـ AI server شغال على الـ Windows مباشرة
       - AI_SERVICE_URL=http://host.docker.internal:8000
     env_file:
       - ./backend-node/.env
@@ -47,26 +41,22 @@ services:
     networks:
       - deepguard-network
 
-  # 4. الفرونت-إند (React/Vite)
   front-node:
     build:
       context: ./frontend_node
     container_name: front_node_container
-    # بدون ports - Nginx هو اللي يعرضه على بورت 80
     volumes:
       - ./frontend_node:/app
       - /app/node_modules
     env_file:
       - ./frontend_node/.env
     environment:
-      # الفرونت يكلم الـ API على نفس الـ port عشان Nginx هيوزع
       - VITE_API_BASE_URL=http://localhost
     depends_on:
       - backend
     networks:
       - deepguard-network
 
-  # 5. Nginx - الباب الوحيد للخارج
   nginx:
     image: nginx:alpine
     container_name: nginx_container
@@ -76,7 +66,6 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./backend-node/uploads:/app/uploads
     extra_hosts:
-      # عشان Nginx يقدر يكلم الـ AI server على الـ Windows
       - "host.docker.internal:host-gateway"
     depends_on:
       - backend
