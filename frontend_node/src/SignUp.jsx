@@ -28,7 +28,7 @@ export default function Signup() {
   async function signupfun(values) {
     setLoading(true);
     try {
-     const response= await axios.post("http://localhost:3000/users/signUp", {
+     const response= await axios.post("/api/users/signUp", {
         email: values.email,
         userName: values.userName,
         password: values.password,

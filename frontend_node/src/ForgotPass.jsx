@@ -22,7 +22,7 @@ export default function Forgotpass() {
     initialValues: user,
     onSubmit: async (values) => {
   try {
-    const response = await axios.patch("http://localhost:3000/users/forgetPassword", {
+    const response = await axios.patch("/api/users/forgetPassword", {
       email: values.email,
     });
     localStorage.setItem("email", values.email);

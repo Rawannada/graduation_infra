@@ -127,7 +127,7 @@ export default function Chat() {
   //   setLoading(true);
 
   //   try {
-  //     const res = await fetch(`http://localhost:3000/ai/ask/${fileId}`, {
+  //     const res = await fetch(`/api/ai/ask/${fileId}`, {
   //       method: "POST",
   //       headers: {
   //         "Content-Type": "application/json",

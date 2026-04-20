@@ -34,7 +34,7 @@ const login = useFormik({
 
     try {
       const response = await axios.patch(
-        "http://localhost:3000/users/resetPassword",
+        "/api/users/resetPassword",
         {
           email,
           password: values.password,

@@ -6,147 +6,196 @@ import numpy as np
 import faiss
 from embeddings import EmbeddingGenerator
 
-# إعداد اللوجر
 logger = logging.getLogger("VECTOR_STORE")
 
 # ─────────────────────────────────────────────
-# مسار تخزين الكاش
+# Cache directory
 # ─────────────────────────────────────────────
 CACHE_DIR = Path(__file__).parent / "vs_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
+
 def _cache_key(source: str) -> str:
+    """
+    If source is a MongoDB ObjectId (24 hex chars) → use it directly.
+    Otherwise → MD5 hash.
+    """
     if len(source) == 24 and all(c in "0123456789abcdefABCDEF" for c in source):
         return source
     return hashlib.md5(str(source).encode()).hexdigest()
 
+
 class VectorStore:
     def __init__(self, max_workers: int = 4):
         self.embedding_generator = EmbeddingGenerator(max_workers=max_workers)
-        self.index = None
-        self.documents = []    # المخزن الأساسي للنصوص والميتا داتا
-        self.vectors = None    # المتجهات الموحدة (Normalized) للبحث
-        self.embeddings = None # المتجهات الخام (Raw) للدمج الموزع
+        self.index     = None   # FAISS index — for fast similarity search
+        self.documents = []     # Unified docs: text + source + page + section_title
+        self.vectors   = None   # Normalized vectors — for MMR and keyword boost
 
     # ─────────────────────────────────────────
-    # الـ Aliases لضمان التوافق مع أي API (حل مشكلة AttributeError)
-    # ─────────────────────────────────────────
-    @property
-    def chunks(self):
-        return self.documents
-    
-    @chunks.setter
-    def chunks(self, value):
-        self.documents = value
-
-    @property
-    def metadata(self):
-        return self.documents
-
-    @metadata.setter
-    def metadata(self, value):
-        self.documents = value
-
-    # ─────────────────────────────────────────
-    # الحفظ والتحميل (Persistence)
+    # PERSISTENCE
     # ─────────────────────────────────────────
 
     def save(self, cache_source: str) -> None:
         if self.index is None:
-            logger.warning("Nothing to save – index is empty.")
+            logger.warning("[SAVE] Nothing to save — index is empty.")
             return
 
-        key = _cache_key(cache_source)
+        key        = _cache_key(cache_source)
         index_path = CACHE_DIR / f"{key}.index"
-        meta_path = CACHE_DIR / f"{key}.meta"
+        meta_path  = CACHE_DIR / f"{key}.meta"
 
+        logger.info(f"[SAVE] Saving FAISS index to {index_path.name}...")
         faiss.write_index(self.index, str(index_path))
 
+        logger.info(f"[SAVE] Saving metadata (documents + vectors) to {meta_path.name}...")
         with open(meta_path, "wb") as f:
             pickle.dump(
                 {
-                    "documents": self.documents,
-                    "vectors": self.vectors,
-                    "embeddings": self.embeddings,
+                    "documents":     self.documents,
+                    "vectors":       self.vectors,   # normalized — needed for MMR on reload
                     "original_path": cache_source,
                 },
                 f,
                 protocol=pickle.HIGHEST_PROTOCOL,
             )
-        logger.info(f"💾 [CACHE] Saved vector store → {index_path.name}")
+        logger.info(f"[SAVE] Done. {len(self.documents)} chunks saved to disk.")
 
     def load(self, cache_source: str) -> bool:
-        key = _cache_key(cache_source)
+        key        = _cache_key(cache_source)
         index_path = CACHE_DIR / f"{key}.index"
-        meta_path = CACHE_DIR / f"{key}.meta"
+        meta_path  = CACHE_DIR / f"{key}.meta"
 
         if not index_path.exists() or not meta_path.exists():
+            logger.info(f"[LOAD] No cache found for key: {key}")
             return False
 
         try:
+            logger.info(f"[LOAD] Loading FAISS index from {index_path.name}...")
             self.index = faiss.read_index(str(index_path))
+
+            logger.info(f"[LOAD] Loading metadata from {meta_path.name}...")
             with open(meta_path, "rb") as f:
                 meta = pickle.load(f)
 
             self.documents = meta.get("documents", [])
-            self.vectors = meta.get("vectors")
-            self.embeddings = meta.get("embeddings")
+            self.vectors   = meta.get("vectors")    # normalized vectors — restored for MMR
 
-            logger.info(f"⚡ [CACHE] Loaded vector store from disk ({len(self.documents)} chunks)")
+            logger.info(f"[LOAD] Load complete. {len(self.documents)} chunks | vectors shape: {self.vectors.shape if self.vectors is not None else 'None'}")
             return True
+
         except Exception as e:
-            logger.error(f"⚠️ [CACHE] Failed to load cache ({e}), will rebuild.")
+            logger.error(f"[LOAD] ERROR: Failed to load cache — {str(e)}")
             return False
 
     # ─────────────────────────────────────────
-    # بناء الفهرس (Build Methods)
+    # BUILD — Standard (no distribution)
     # ─────────────────────────────────────────
 
     def create_vector_store(self, pages_data: list, cache_source: str = None) -> None:
+        """
+        Used when no remote workers are available.
+        Embeds locally, normalizes, builds index — all in one shot.
+        """
         valid_pages = [p for p in pages_data if p.get("text") and p["text"].strip()]
         if not valid_pages:
-            logger.warning("No text found to index.")
+            logger.warning("[BUILD] No text found to index.")
             return
 
-        texts = [p["text"] for p in valid_pages]
+        logger.info(f"[BUILD] Generating embeddings for {len(valid_pages)} chunks...")
+        texts      = [p["text"] for p in valid_pages]
         embeddings = self.embedding_generator.embed_documents(texts)
-        embeddings_np = np.array(embeddings).astype("float32")
-        
-        self._build_from_embeddings(embeddings_np, valid_pages)
+        emb_np     = np.array(embeddings).astype("float32")
+        logger.info(f"[BUILD] Embeddings shape: {emb_np.shape}")
+
+        norms             = np.linalg.norm(emb_np, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        normalized        = emb_np / norms
+
+        self._finalize_index(normalized, emb_np, valid_pages)
+        logger.info(f"[BUILD] Index built with {len(valid_pages)} chunks.")
 
         if cache_source:
             self.save(cache_source)
 
-    def _build_from_embeddings(self, embeddings_np: np.ndarray, pages_metadata: list):
-        """المنطق الجوهري لدمج المتجهات وتحديث الفهرس"""
-        # 1. تحديث المتجهات الخام
-        if self.embeddings is None:
-            self.embeddings = embeddings_np
-        else:
-            self.embeddings = np.vstack([self.embeddings, embeddings_np])
-        
-        # 2. التوحيد (Normalization) للبحث بدقة أعلى
-        norms = np.linalg.norm(embeddings_np, axis=1, keepdims=True)
-        norms[norms == 0] = 1
-        new_vectors = embeddings_np / norms
-        
-        if self.vectors is None:
-            self.vectors = new_vectors
-        else:
-            self.vectors = np.vstack([self.vectors, new_vectors])
+    # ─────────────────────────────────────────
+    # BUILD — Distributed (from manager)
+    # ─────────────────────────────────────────
 
-        # 3. تحديث فهرس Faiss
-        dimension = embeddings_np.shape[1]
+    def build_from_distributed(
+        self,
+        all_vectors: list,    # list of np.ndarray — one per node (already normalized)
+        all_chunks:  list,    # flat list of dicts: {text, filename, page_num, section_title}
+        cache_source: str = None
+    ) -> None:
+        """
+        Called by the manager after collecting all worker packages.
+        - Stacks all normalized vectors into one matrix (single vstack)
+        - Unifies metadata keys to: source + page
+        - Builds FAISS index once
+        - Saves to disk
+        """
+        if not all_vectors:
+            logger.warning("[DISTRIBUTED] No vectors received. Build aborted.")
+            return
+
+        logger.info(f"[DISTRIBUTED] Stacking {len(all_vectors)} vector batches into one matrix...")
+        final_vectors = np.vstack(all_vectors).astype("float32")
+        logger.info(f"[DISTRIBUTED] Final matrix shape: {final_vectors.shape} | dtype: {final_vectors.dtype}")
+
+        # Unify metadata keys — source + page (golden rule)
+        logger.info(f"[DISTRIBUTED] Unifying metadata keys (filename->source, page_num->page)...")
+        unified_docs = [
+            {
+                "text":          c.get("text", ""),
+                "source":        c.get("filename", c.get("source", "unknown")),
+                "page":          c.get("page_num",  c.get("page", 0)),
+                "section_title": c.get("section_title", ""),
+            }
+            for c in all_chunks
+        ]
+        logger.info(f"[DISTRIBUTED] Unified {len(unified_docs)} documents.")
+
+        # Build FAISS index once
+        logger.info(f"[DISTRIBUTED] Building FAISS IndexFlatL2 with dim={final_vectors.shape[1]}...")
+        dimension  = final_vectors.shape[1]
+        self.index = faiss.IndexFlatL2(dimension)
+        self.index.add(final_vectors)
+
+        self.vectors   = final_vectors
+        self.documents = unified_docs
+
+        logger.info(f"[DISTRIBUTED] FAISS index built. Total vectors: {self.index.ntotal}")
+
+        if cache_source:
+            self.save(cache_source)
+
+    # ─────────────────────────────────────────
+    # INTERNAL HELPER
+    # ─────────────────────────────────────────
+
+    def _finalize_index(
+        self,
+        normalized_emb: np.ndarray,
+        raw_emb:        np.ndarray,
+        pages_metadata: list
+    ) -> None:
+        dimension = raw_emb.shape[1]
+
         if self.index is None:
             self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(embeddings_np)
+        self.index.add(raw_emb)
 
-        # 4. تحديث المستندات
+        if self.vectors is None:
+            self.vectors = normalized_emb
+        else:
+            self.vectors = np.vstack([self.vectors, normalized_emb])
+
         new_docs = [
             {
-                "text": p["text"],
-                "source": p.get("filename", "unknown"),
-                "page": p.get("page_num", 0),
+                "text":          p["text"],
+                "source":        p.get("filename", p.get("source", "unknown")),
+                "page":          p.get("page_num",  p.get("page", 0)),
                 "section_title": p.get("section_title", ""),
             }
             for p in pages_metadata
@@ -154,18 +203,117 @@ class VectorStore:
         self.documents.extend(new_docs)
 
     # ─────────────────────────────────────────
-    # البحث (Search)
+    # SEARCH
     # ─────────────────────────────────────────
 
     def search(self, query: str, k: int = 4) -> list:
-        if self.index is None: return []
-        query_vector = np.array([self.embedding_generator.embed_query(query)]).astype("float32")
-        _, indices = self.index.search(query_vector, k)
-        
-        results = []
-        for i in indices[0]:
-            if i != -1 and i < len(self.documents):
-                results.append(self.documents[i])
-        
+        if self.index is None:
+            return []
+        query_vec = np.array(
+            [self.embedding_generator.embed_query(query)]
+        ).astype("float32")
+        _, indices = self.index.search(query_vec, k)
+        results = [
+            self.documents[i]
+            for i in indices[0]
+            if i != -1 and i < len(self.documents)
+        ]
         results.sort(key=lambda x: x["page"])
         return results
+
+    def search_with_keyword_boost(
+        self,
+        query: str,
+        keywords: list,
+        k: int = 4,
+        keyword_bonus: float = 0.4
+    ) -> list:
+        if self.index is None or self.vectors is None:
+            return []
+
+        query_vec = np.array(
+            [self.embedding_generator.embed_query(query)]
+        ).astype("float32")
+        q_norm         = np.linalg.norm(query_vec)
+        query_vec_norm = query_vec / q_norm if q_norm > 0 else query_vec
+
+        all_sims = (self.vectors @ query_vec_norm.T).flatten()
+
+        scored = []
+        for idx, doc in enumerate(self.documents):
+            text_lower = doc["text"].lower()
+            boost = sum(
+                keyword_bonus
+                for kw in keywords
+                if kw.lower() in text_lower
+            )
+            scored.append((idx, float(all_sims[idx]) + boost))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top = [self.documents[idx] for idx, _ in scored[:k]]
+        top.sort(key=lambda x: x["page"])
+        return top
+
+    def search_mmr(
+        self,
+        query: str,
+        k: int = 4,
+        fetch_k: int = 12,
+        lambda_mult: float = 0.75
+    ) -> list:
+        if self.index is None or self.vectors is None:
+            return []
+
+        query_vec = np.array(
+            [self.embedding_generator.embed_query(query)]
+        ).astype("float32")
+        q_norm         = np.linalg.norm(query_vec)
+        query_vec_norm = query_vec / q_norm if q_norm > 0 else query_vec
+
+        fetch_k = min(fetch_k, len(self.documents))
+        _, raw_indices = self.index.search(query_vec, fetch_k)
+        candidate_indices = [
+            i for i in raw_indices[0]
+            if i != -1 and i < len(self.documents)
+        ]
+
+        if not candidate_indices:
+            return []
+
+        candidate_vecs = self.vectors[candidate_indices]
+        query_sims     = (candidate_vecs @ query_vec_norm.T).flatten()
+
+        selected_positions   = []
+        selected_doc_indices = []
+
+        for _ in range(min(k, len(candidate_indices))):
+            best_pos, best_score = None, -999.0
+
+            for pos, doc_idx in enumerate(candidate_indices):
+                if pos in selected_positions:
+                    continue
+
+                relevance = float(query_sims[pos])
+
+                if selected_doc_indices:
+                    sel_vecs            = self.vectors[selected_doc_indices]
+                    max_sim_to_selected = float(
+                        np.max(sel_vecs @ self.vectors[doc_idx])
+                    )
+                    diversity = 1.0 - max_sim_to_selected
+                else:
+                    diversity = 1.0
+
+                score = lambda_mult * relevance + (1.0 - lambda_mult) * diversity
+
+                if score > best_score:
+                    best_score = score
+                    best_pos   = pos
+
+            if best_pos is not None:
+                selected_positions.append(best_pos)
+                selected_doc_indices.append(candidate_indices[best_pos])
+
+        final = [self.documents[i] for i in selected_doc_indices]
+        final.sort(key=lambda x: x["page"])
+        return final

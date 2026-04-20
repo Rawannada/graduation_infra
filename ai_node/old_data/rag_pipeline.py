@@ -126,8 +126,9 @@ class RAGPipeline:
                     q, k=4, fetch_k=12, lambda_mult=0.75,
                 )
             else:
-                # search() returns a flat list of dicts — no tuple unpacking needed
-                docs = self.vector_store.search(q, k=4)
+                # [FIX] Simplified extraction from tuple
+                search_results = self.vector_store.search(q, k=4)
+                docs = [doc for _, doc in search_results]
 
             for doc in docs:
                 key = f"{doc['source']}::{doc['page']}"
@@ -140,6 +141,8 @@ class RAGPipeline:
         if not relevant_docs:
             return self._not_found_response()
 
+        # [MODIFICATION] Enhanced context string to include Section Titles
+        # This helps the LLM understand the structure of the document
         context_parts = []
         for d in relevant_docs:
             header = f"[Source: {d['source']}, Page: {d['page']}"
@@ -147,7 +150,7 @@ class RAGPipeline:
                 header += f", Section: {d['section_title']}"
             header += "]"
             context_parts.append(f"{header}\n{d['text']}")
-
+        
         context = "\n\n".join(context_parts)
 
         keywords_all  = self._extract_keywords(question)
@@ -164,6 +167,7 @@ class RAGPipeline:
                 "Search for BOTH forms in the context.\n"
             )
 
+        # [MODIFICATION] Updated prompt to instruct the LLM to use section titles for better context
         prompt = f"""You are a helpful document assistant. Use the context below to answer the question.
 {hint_line}
 Rules:

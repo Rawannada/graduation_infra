@@ -22,7 +22,7 @@ export default function Code() {
     }
 
     try {
-     const response= await axios.post("http://localhost:3000/users/confirmCode", {
+     const response= await axios.post("/api/users/confirmCode", {
         email,
         OTP,
       });

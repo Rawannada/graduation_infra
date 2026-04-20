@@ -11,7 +11,7 @@ export default function Search() {
     async function fetchRecent() {
       try {
         console.log("fetching recent...");
-        const res = await fetch("http://localhost:3000/upload/recent", {
+        const res = await fetch("/api/upload/recent", {
           headers: { Authorization: `bearer ${accessToken}` },
         });
         const data = await res.json();
@@ -36,7 +36,7 @@ export default function Search() {
     try {
       console.log("Searching:", value);
       const res = await fetch(
-        `http://localhost:3000/upload/search?search=${value}`,
+        `/api/upload/search?search=${value}`,
         {
           method: "GET",
           headers: { Authorization: `bearer ${accessToken}` },

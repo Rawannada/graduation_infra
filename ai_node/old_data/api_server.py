@@ -4,16 +4,15 @@ import threading
 import logging
 import numpy as np
 import httpx
-import faiss
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 from pypdf import PdfReader
 
-# الإعدادات ومسارات المكتبات (تأكدي أن المجلدات موجودة في نفس المسار)
+# الإعدادات ومسارات المكتبات
 sys.path.append(str(Path(__file__).parent))
 sys.path.append(str(Path(__file__).parent / "pdf_summarizer" / "src"))
 
@@ -21,48 +20,29 @@ from vector_store import VectorStore, CACHE_DIR, _cache_key
 from rag_pipeline import RAGPipeline
 from pdf_processor import PDFProcessor
 
-# محاولات استيراد المكتبات الخارجية لضمان المرونة
 try:
     from pdf_summarizer.src.summarizer import PDFSummarizer
 except ImportError:
-    try:
-        from summarizer import PDFSummarizer
-    except ImportError:
-        PDFSummarizer = None
+    from summarizer import PDFSummarizer
 
 try:
     from pdf_summarizer.src.chunker import split_into_chunks
 except ImportError:
-    try:
-        from chunker import split_into_chunks
-    except ImportError:
-        from src.chunker import split_into_chunks
+    from src.chunker import split_into_chunks
 
-# إعداد اللوجر بشكل احترافي
-logging.basicConfig(
-    level=logging.INFO, 
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("AI_SERVER_MANAGER")
 
-app = FastAPI(title="Distributed RAG Manager")
-app.add_middleware(
-    CORSMiddleware, 
-    allow_origins=["*"], 
-    allow_methods=["*"], 
-    allow_headers=["*"]
-)
-
-# المحرك الأساسي لتنفيذ العمليات الثقيلة (CPU-bound)
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 executor = ThreadPoolExecutor(max_workers=4)
 
-# إعدادات المسارات والعمال (Workers)
+# مسار الـ WSL من الويندوز
 WSL_BASE_PATH = Path(r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node")
-WORKER_URLS: List[str] = ["http://192.168.1.150:8001"] 
+WORKER_URLS: List[str] = ["http://192.168.1.12:8001"]
 
-# مخازن البيانات في الذاكرة
 vector_stores: Dict[str, VectorStore] = {}
-vs_building: Set[str] = set()
+vs_building: set = set()
 _vs_lock = threading.Lock()
 
 class SummarizeRequest(BaseModel):
@@ -74,7 +54,7 @@ class QuestionRequest(BaseModel):
     question: str
     fileId: str = None
 
-# --- Helper: تنظيف ومعالجة مسارات الملفات ---
+# --- Helper: تنظيف المسارات للويندوز ---
 def _get_clean_path(raw_path: str) -> Path:
     p = Path(raw_path)
     if "uploads" in p.parts:
@@ -89,25 +69,26 @@ def _get_clean_path(raw_path: str) -> Path:
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
     return file_path
 
-# --- Helper: تقسيم الصفحات على الأجهزة المتاحة ---
 def _split_pages(total_pages: int, num_workers: int) -> List[tuple]:
-    if total_pages == 0: return []
-    chunk_size = max(1, total_pages // num_workers)
+    chunk_size = total_pages // num_workers
     ranges = []
     start = 0
     for i in range(num_workers):
         end = start + chunk_size if i < num_workers - 1 else total_pages
-        if start < total_pages:
-            ranges.append((start, end))
+        ranges.append((start, end))
         start = end
     return ranges
 
-# --- التجميع الذكي للنتائج (Merge Logic) ---
+# --- التجميع الذكي (Merge) - الحل هنا ---
 def _merge_result_into_store(vs: VectorStore, result: dict):
     if not result or "embeddings" not in result:
         return
     
-    # تحويل الـ Embeddings القادمة من JSON إلى Numpy
+    # تأمين وجود السمات المطلوبة في كائن vs
+    if not hasattr(vs, 'documents'): vs.documents = []
+    if not hasattr(vs, 'embeddings'): vs.embeddings = None
+
+    # تحويل الـ Embeddings لـ Numpy Array
     new_embs = np.array(result["embeddings"], dtype=np.float32)
     
     if vs.embeddings is None:
@@ -115,11 +96,11 @@ def _merge_result_into_store(vs: VectorStore, result: dict):
     else:
         vs.embeddings = np.vstack([vs.embeddings, new_embs])
         
-    # دمج النصوص المقطعة (Chunks)
+    # تجميع النصوص (سواء جاية باسم chunks أو documents)
     incoming_text = result.get("chunks", result.get("documents", []))
     vs.documents.extend(incoming_text)
 
-# --- استدعاء الـ Worker البعيد ---
+# --- بناء الـ Vector Store بالتوزيع ---
 async def _call_worker_vectorize(worker_url: str, file_path: Path, start: int, end: int) -> dict:
     async with httpx.AsyncClient(timeout=600) as client:
         try:
@@ -129,10 +110,9 @@ async def _call_worker_vectorize(worker_url: str, file_path: Path, start: int, e
                 response = await client.post(f"{worker_url}/process", files=files, data=data)
             return response.json() if response.status_code == 200 else {}
         except Exception as e:
-            logger.error(f"❌ Worker {worker_url} failed: {e}")
+            logger.error(f"Worker {worker_url} failed: {e}")
             return {}
 
-# --- المعالجة المحلية (على جهاز المدير) ---
 def _build_local_partial(file_path: Path, start: int, end: int):
     vs = VectorStore(max_workers=4)
     processor = PDFProcessor(str(file_path))
@@ -144,8 +124,8 @@ def _build_local_partial(file_path: Path, start: int, end: int):
         for chunk in chunks:
             chunked_data.append({
                 "text": chunk,
-                "filename": section.get("filename", file_path.name),
-                "page_num": section.get("page_num", 0),
+                "filename": section["filename"],
+                "page_num": section["page_num"],
             })
     
     vs.create_vector_store(chunked_data)
@@ -154,7 +134,6 @@ def _build_local_partial(file_path: Path, start: int, end: int):
         "chunks": chunked_data
     }
 
-# --- العملية الموزعة الكبرى (Orchestration) ---
 async def _distribute_and_build(file_path: Path, cache_key: str):
     try:
         reader = PdfReader(str(file_path))
@@ -162,104 +141,71 @@ async def _distribute_and_build(file_path: Path, cache_key: str):
         num_total = len(WORKER_URLS) + 1
         page_ranges = _split_pages(total_pages, num_total)
         
-        actual_workers_count = min(len(page_ranges) - 1, len(WORKER_URLS))
-        
-        # إرسال المهام للـ Workers
         worker_tasks = [
-            _call_worker_vectorize(WORKER_URLS[i], file_path, page_ranges[i][0], page_ranges[i][1]) 
-            for i in range(actual_workers_count)
+            _call_worker_vectorize(url, file_path, r[0], r[1]) 
+            for i, (url, r) in enumerate(zip(WORKER_URLS, page_ranges))
         ]
         
-        # تنفيذ الجزء المحلي في Thread منفصل
         loop = asyncio.get_event_loop()
-        local_range = page_ranges[-1]
-        local_task = loop.run_in_executor(executor, _build_local_partial, file_path, local_range[0], local_range[1])
+        local_task = loop.run_in_executor(executor, _build_local_partial, file_path, page_ranges[-1][0], page_ranges[-1][1])
         
-        # انتظار تجميع كل النتائج
         results = await asyncio.gather(*worker_tasks)
         local_res = await local_task
 
-        # دمج كل شيء في VectorStore موحد
         master_vs = VectorStore(max_workers=4)
         _merge_result_into_store(master_vs, local_res)
         for res in results:
             if isinstance(res, dict): _merge_result_into_store(master_vs, res)
         
-        # بناء الفهرس النهائي (FAISS Index)
-        if master_vs.embeddings is not None and len(master_vs.embeddings) > 0:
+        if master_vs.embeddings is not None:
+            import faiss
             d = master_vs.embeddings.shape[1]
             master_vs.index = faiss.IndexFlatL2(d)
             master_vs.index.add(master_vs.embeddings)
             master_vs.save(cache_key)
-            
-            with _vs_lock:
-                vector_stores[cache_key] = master_vs
-            logger.info(f"✅ Master Store Built & Saved: {cache_key}")
+            vector_stores[cache_key] = master_vs
+            logger.info(f"Master Store Built & Saved: {cache_key}")
             
     except Exception as e:
-        logger.error(f"❌ Distribute Build Error: {e}")
+        logger.error(f"Distribute Build Error: {e}")
     finally:
-        with _vs_lock:
-            vs_building.discard(cache_key)
+        with _vs_lock: vs_building.discard(cache_key)
 
-# --- API Endpoints ---
-
+# --- Routes ---
 @app.post("/api/summarize")
 async def summarize(request: SummarizeRequest):
     file_path = _get_clean_path(request.filePath)
     cache_key = request.fileId or _cache_key(str(file_path))
     
-    if not PDFSummarizer:
-        raise HTTPException(status_code=500, detail="Summarizer module not loaded.")
-        
     summarizer = PDFSummarizer()
     summary_result = summarizer.summarize(str(file_path))
 
-    # بدء عملية بناء الفيكتور ستور في الخلفية إذا لم يكن موجوداً
     with _vs_lock:
         if cache_key not in vector_stores and cache_key not in vs_building:
             vs_building.add(cache_key)
             asyncio.create_task(_distribute_and_build(file_path, cache_key))
 
-    return {
-        "status": "success", 
-        "summary": summary_result, 
-        "metadata": {"cache_key": cache_key}
-    }
+    return {"status": "success", "summary": summary_result, "metadata": {"cache_key": cache_key}}
 
 @app.post("/api/ask")
 async def ask(request: QuestionRequest):
     file_path = _get_clean_path(request.filePath)
     cache_key = request.fileId or _cache_key(str(file_path))
     
-    # الانتظار في حال كان الملف قيد المعالجة (حتى 90 ثانية)
     wait = 0
-    while cache_key in vs_building and wait < 90:
-        await asyncio.sleep(1)
-        wait += 1
+    while cache_key in vs_building and wait < 60:
+        await asyncio.sleep(1); wait += 1
 
-    # محاولة تحميل المتجر من الذاكرة أو الكاش
     if cache_key not in vector_stores:
         vs = VectorStore(max_workers=4)
-        if vs.load(cache_key):
-            with _vs_lock:
-                vector_stores[cache_key] = vs
-        else:
-            # إعادة بناء المتجر لو تعذر التحميل
-            await _distribute_and_build(file_path, cache_key)
-            if cache_key not in vector_stores:
-                raise HTTPException(status_code=500, detail="Knowledge base is still building or failed.")
+        if not vs.load(cache_key):
+             await _distribute_and_build(file_path, cache_key)
+        vector_stores[cache_key] = vs
 
-    # تشغيل RAG Pipeline
     rag = RAGPipeline(vector_store=vector_stores[cache_key])
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(executor, rag.query, request.question)
-    
-    return {
-        "status": "success", 
-        "answer": result.get("answer"), 
-        "sources": result.get("sources")
-    }
+    return {"status": "success", "answer": result.get("answer"), "sources": result.get("sources")}
 
 if __name__ == "__main__":
     import uvicorn
