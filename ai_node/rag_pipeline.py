@@ -2,12 +2,18 @@ import re
 import requests
 from vector_store import VectorStore
 
+
 class RAGPipeline:
     def __init__(self, vector_store: VectorStore, llm_model: str = "llama3"):
         self.vector_store = vector_store
-        self.llm_model = llm_model
-        self.url = "http://localhost:11434/api/generate"
+        self.llm_model    = llm_model
+        self.url          = "http://localhost:11434/api/generate"
 
+    # ─────────────────────────────────────────
+    # ACRONYM DICTIONARY
+    # Used to expand abbreviations in queries so they match document text
+    # that may use either the short or full form
+    # ─────────────────────────────────────────
     ACRONYM_EXPANSIONS = {
         "LAN":   "Local Area Network",
         "WAN":   "Wide Area Network",
@@ -31,6 +37,10 @@ class RAGPipeline:
         "VLAN":  "Virtual Local Area Network",
     }
 
+    # ─────────────────────────────────────────
+    # STOP WORDS
+    # Common words filtered out during keyword extraction
+    # ─────────────────────────────────────────
     STOP_WORDS = {
         "what", "is", "are", "how", "does", "do", "explain", "define",
         "describe", "tell", "me", "about", "the", "a", "an", "and",
@@ -39,6 +49,11 @@ class RAGPipeline:
         "would", "should", "please", "give", "show", "list", "wan",
     }
 
+    # ─────────────────────────────────────────
+    # KEYWORD EXTRACTOR
+    # Extracts meaningful tokens from the question.
+    # Expands known acronyms so both forms are searched.
+    # ─────────────────────────────────────────
     def _extract_keywords(self, question: str) -> list:
         tokens   = re.findall(r'[A-Za-z0-9/\-]+', question)
         keywords = []
@@ -53,6 +68,11 @@ class RAGPipeline:
                 keywords.append(self.ACRONYM_EXPANSIONS[upper])
         return list(dict.fromkeys(keywords))
 
+    # ─────────────────────────────────────────
+    # COMPOUND QUESTION SPLITTER
+    # Splits multi-part questions like "explain X and Y and Z"
+    # into separate sub-queries so each part gets its own retrieval
+    # ─────────────────────────────────────────
     def _split_compound_question(self, question: str) -> list:
         q     = question.strip()
         parts = re.split(r'\band\b|&|\balso\b', q, flags=re.IGNORECASE)
@@ -83,6 +103,10 @@ class RAGPipeline:
 
         return queries
 
+    # ─────────────────────────────────────────
+    # NOT FOUND RESPONSE
+    # Returned when no relevant documents are found in the index
+    # ─────────────────────────────────────────
     def _not_found_response(self) -> dict:
         return {
             "answer": (
@@ -93,6 +117,10 @@ class RAGPipeline:
             "sources": [],
         }
 
+    # ─────────────────────────────────────────
+    # NOT FOUND CHECKER
+    # Detects whether the LLM response indicates it could not find an answer
+    # ─────────────────────────────────────────
     def _check_not_found(self, answer: str) -> bool:
         not_found_phrases = [
             "not found", "not covered", "no information", "not mentioned",
@@ -105,11 +133,21 @@ class RAGPipeline:
         answer_lower = answer.lower()
         return any(phrase in answer_lower for phrase in not_found_phrases)
 
-    def query(self, question: str,
-              use_mmr: bool = True,
-              use_query_expansion: bool = False) -> dict:
-        """Full RAG pipeline: split → retrieve → deduplicate → generate."""
-
+    # ─────────────────────────────────────────
+    # MAIN QUERY METHOD
+    # Full RAG pipeline:
+    #   1. Split compound question into sub-queries
+    #   2. Retrieve relevant chunks for each sub-query
+    #   3. Deduplicate retrieved chunks
+    #   4. Build context string with source + page + section info
+    #   5. Send prompt to Ollama and return the answer
+    # ─────────────────────────────────────────
+    def query(
+        self,
+        question:            str,
+        use_mmr:             bool = True,
+        use_query_expansion: bool = False
+    ) -> dict:
         queries = self._split_compound_question(question)
 
         seen_keys     = set()
@@ -118,15 +156,17 @@ class RAGPipeline:
         for q in queries:
             keywords = self._extract_keywords(q)
             if keywords:
+                # Keyword boost: cosine similarity + bonus for keyword matches
                 docs = self.vector_store.search_with_keyword_boost(
                     q, keywords=keywords, k=4, keyword_bonus=0.4,
                 )
             elif use_mmr:
+                # MMR: balances relevance and diversity
                 docs = self.vector_store.search_mmr(
                     q, k=4, fetch_k=12, lambda_mult=0.75,
                 )
             else:
-                # search() returns a flat list of dicts — no tuple unpacking needed
+                # Basic L2 similarity search
                 docs = self.vector_store.search(q, k=4)
 
             for doc in docs:
@@ -135,11 +175,13 @@ class RAGPipeline:
                     seen_keys.add(key)
                     relevant_docs.append(doc)
 
+        # Keep top 6 unique chunks across all sub-queries
         relevant_docs = relevant_docs[:6]
 
         if not relevant_docs:
             return self._not_found_response()
 
+        # Build context string — includes source, page, section title, and text
         context_parts = []
         for d in relevant_docs:
             header = f"[Source: {d['source']}, Page: {d['page']}"
@@ -150,6 +192,7 @@ class RAGPipeline:
 
         context = "\n\n".join(context_parts)
 
+        # Build acronym hint line to help the LLM search both forms
         keywords_all  = self._extract_keywords(question)
         acronym_hints = [
             f'"{kw.upper()}" also appears as "{self.ACRONYM_EXPANSIONS[kw.upper()]}"'

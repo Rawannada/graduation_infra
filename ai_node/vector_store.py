@@ -8,18 +8,17 @@ from embeddings import EmbeddingGenerator
 
 logger = logging.getLogger("VECTOR_STORE")
 
-# ─────────────────────────────────────────────
-# Cache directory
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# CACHE DIRECTORY
+# All FAISS indexes and metadata files are stored here on disk
+# ─────────────────────────────────────────────────────────────────────────────
 CACHE_DIR = Path(__file__).parent / "vs_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
 def _cache_key(source: str) -> str:
-    """
-    If source is a MongoDB ObjectId (24 hex chars) → use it directly.
-    Otherwise → MD5 hash.
-    """
+    # If source is a MongoDB ObjectId (24 hex chars) use it directly
+    # Otherwise generate an MD5 hash from the source string
     if len(source) == 24 and all(c in "0123456789abcdefABCDEF" for c in source):
         return source
     return hashlib.md5(str(source).encode()).hexdigest()
@@ -28,9 +27,9 @@ def _cache_key(source: str) -> str:
 class VectorStore:
     def __init__(self, max_workers: int = 4):
         self.embedding_generator = EmbeddingGenerator(max_workers=max_workers)
-        self.index     = None   # FAISS index — for fast similarity search
-        self.documents = []     # Unified docs: text + source + page + section_title
-        self.vectors   = None   # Normalized vectors — for MMR and keyword boost
+        self.index     = None   # FAISS index — used for fast similarity search
+        self.documents = []     # List of dicts: text + source + page + section_title
+        self.vectors   = None   # Normalized vectors — used for MMR and keyword boost
 
     # ─────────────────────────────────────────
     # PERSISTENCE
@@ -79,7 +78,7 @@ class VectorStore:
                 meta = pickle.load(f)
 
             self.documents = meta.get("documents", [])
-            self.vectors   = meta.get("vectors")    # normalized vectors — restored for MMR
+            self.vectors   = meta.get("vectors")
 
             logger.info(f"[LOAD] Load complete. {len(self.documents)} chunks | vectors shape: {self.vectors.shape if self.vectors is not None else 'None'}")
             return True
@@ -90,13 +89,11 @@ class VectorStore:
 
     # ─────────────────────────────────────────
     # BUILD — Standard (no distribution)
+    # Used when no remote workers are available
+    # Embeds locally, normalizes, and builds the index in one shot
     # ─────────────────────────────────────────
 
     def create_vector_store(self, pages_data: list, cache_source: str = None) -> None:
-        """
-        Used when no remote workers are available.
-        Embeds locally, normalizes, builds index — all in one shot.
-        """
         valid_pages = [p for p in pages_data if p.get("text") and p["text"].strip()]
         if not valid_pages:
             logger.warning("[BUILD] No text found to index.")
@@ -119,22 +116,20 @@ class VectorStore:
             self.save(cache_source)
 
     # ─────────────────────────────────────────
-    # BUILD — Distributed (from manager)
+    # BUILD — Distributed (called by manager after collecting all worker packages)
+    # Steps:
+    #   1. Stack all normalized vectors into one matrix (single vstack)
+    #   2. Unify metadata keys to: source + page
+    #   3. Build FAISS index once from the full matrix
+    #   4. Save to disk
     # ─────────────────────────────────────────
 
     def build_from_distributed(
         self,
-        all_vectors: list,    # list of np.ndarray — one per node (already normalized)
-        all_chunks:  list,    # flat list of dicts: {text, filename, page_num, section_title}
+        all_vectors:  list,   # list of np.ndarray — one per node (already normalized)
+        all_chunks:   list,   # flat list of dicts: {text, filename, page_num, section_title}
         cache_source: str = None
     ) -> None:
-        """
-        Called by the manager after collecting all worker packages.
-        - Stacks all normalized vectors into one matrix (single vstack)
-        - Unifies metadata keys to: source + page
-        - Builds FAISS index once
-        - Saves to disk
-        """
         if not all_vectors:
             logger.warning("[DISTRIBUTED] No vectors received. Build aborted.")
             return
@@ -143,7 +138,7 @@ class VectorStore:
         final_vectors = np.vstack(all_vectors).astype("float32")
         logger.info(f"[DISTRIBUTED] Final matrix shape: {final_vectors.shape} | dtype: {final_vectors.dtype}")
 
-        # Unify metadata keys — source + page (golden rule)
+        # Unify metadata — all docs must have: source, page, text, section_title
         logger.info(f"[DISTRIBUTED] Unifying metadata keys (filename->source, page_num->page)...")
         unified_docs = [
             {
@@ -156,7 +151,7 @@ class VectorStore:
         ]
         logger.info(f"[DISTRIBUTED] Unified {len(unified_docs)} documents.")
 
-        # Build FAISS index once
+        # Build FAISS index once from the full stacked matrix
         logger.info(f"[DISTRIBUTED] Building FAISS IndexFlatL2 with dim={final_vectors.shape[1]}...")
         dimension  = final_vectors.shape[1]
         self.index = faiss.IndexFlatL2(dimension)
@@ -172,6 +167,8 @@ class VectorStore:
 
     # ─────────────────────────────────────────
     # INTERNAL HELPER
+    # Adds embeddings and metadata to the index incrementally
+    # Used by create_vector_store (standard mode)
     # ─────────────────────────────────────────
 
     def _finalize_index(
@@ -203,7 +200,7 @@ class VectorStore:
         self.documents.extend(new_docs)
 
     # ─────────────────────────────────────────
-    # SEARCH
+    # SEARCH — Basic L2 similarity search
     # ─────────────────────────────────────────
 
     def search(self, query: str, k: int = 4) -> list:
@@ -221,11 +218,16 @@ class VectorStore:
         results.sort(key=lambda x: x["page"])
         return results
 
+    # ─────────────────────────────────────────
+    # SEARCH — Keyword boost (cosine + keyword bonus)
+    # Boosts chunks that contain the query keywords
+    # ─────────────────────────────────────────
+
     def search_with_keyword_boost(
         self,
-        query: str,
-        keywords: list,
-        k: int = 4,
+        query:         str,
+        keywords:      list,
+        k:             int   = 4,
         keyword_bonus: float = 0.4
     ) -> list:
         if self.index is None or self.vectors is None:
@@ -254,11 +256,17 @@ class VectorStore:
         top.sort(key=lambda x: x["page"])
         return top
 
+    # ─────────────────────────────────────────
+    # SEARCH — MMR (Maximal Marginal Relevance)
+    # Balances relevance and diversity in results
+    # lambda_mult: 1.0 = pure relevance, 0.0 = pure diversity
+    # ─────────────────────────────────────────
+
     def search_mmr(
         self,
-        query: str,
-        k: int = 4,
-        fetch_k: int = 12,
+        query:       str,
+        k:           int   = 4,
+        fetch_k:     int   = 12,
         lambda_mult: float = 0.75
     ) -> list:
         if self.index is None or self.vectors is None:

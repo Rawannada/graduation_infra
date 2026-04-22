@@ -57,7 +57,10 @@ executor = ThreadPoolExecutor(max_workers=4)
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
+# Base path for uploaded files (WSL path from Windows)
 WSL_BASE_PATH = Path(r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node")
+
+# Add each worker machine IP here when they run worker_server.py
 WORKER_URLS: List[str] = ["http://192.168.1.150:8001"]
 
 vector_stores: Dict[str, VectorStore] = {}
@@ -72,12 +75,14 @@ class SummarizeRequest(BaseModel):
     fileId:   str = None
 
 class QuestionRequest(BaseModel):
-    filePath:  str
-    question:  str
-    fileId:    str = None
+    filePath: str
+    question: str
+    fileId:   str = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATH RESOLVER
+# Resolves the incoming file path from Node backend to the actual disk path
+# Handles both WSL paths and direct paths
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_clean_path(raw_path: str) -> Path:
     p = Path(raw_path)
@@ -96,13 +101,11 @@ def _get_clean_path(raw_path: str) -> Path:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE SPLITTER
+# Splits total pages evenly across all nodes (remote workers + local)
+# Example: 30 pages, 3 nodes -> [(0,10), (10,20), (20,30)]
+# The last node always gets the remainder to avoid missing any pages
 # ─────────────────────────────────────────────────────────────────────────────
 def _split_pages(total_pages: int, num_workers: int) -> List[tuple]:
-    """
-    Splits total pages evenly across all nodes.
-    Example: 30 pages, 3 nodes -> [(0,10), (10,20), (20,30)]
-    Last node always gets the remainder to avoid missing pages.
-    """
     chunk_size = total_pages // num_workers
     ranges, start = [], 0
     for i in range(num_workers):
@@ -113,18 +116,15 @@ def _split_pages(total_pages: int, num_workers: int) -> List[tuple]:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOCAL PARTIAL BUILD
+# Runs on the manager machine — processes its assigned page range locally.
+# Returns the same structure as remote workers:
+# { "vectors": np.ndarray (2D, normalized), "chunks": list of dicts }
 # ─────────────────────────────────────────────────────────────────────────────
 def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
-    """
-    Processes the manager's own page range locally.
-    Returns the same package structure as the remote workers:
-    { "vectors": np.ndarray (2D, normalized), "chunks": list of dicts }
-    """
     from embeddings import EmbeddingGenerator
 
     logger.info(f"[LOCAL] STEP 1/5 — Starting local build for pages {start}-{end}...")
 
-    # ── STEP 1: Extract text ──
     logger.info(f"[LOCAL] STEP 2/5 — Extracting text from pages {start}-{end}...")
     processor  = PDFProcessor(str(file_path))
     pages_data = processor.process_pdf(
@@ -133,7 +133,6 @@ def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
     )
     logger.info(f"[LOCAL] Extracted {len(pages_data)} sections.")
 
-    # ── STEP 2: Chunking ──
     logger.info(f"[LOCAL] STEP 3/5 — Splitting into chunks (max 100 words each)...")
     chunked_data = []
     for section in pages_data:
@@ -150,7 +149,6 @@ def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
         logger.warning(f"[LOCAL] WARNING: No text found in pages {start}-{end}. Returning empty package.")
         return {"vectors": [], "chunks": []}
 
-    # ── STEP 3: Embed ──
     logger.info(f"[LOCAL] STEP 4/5 — Generating embeddings via Ollama...")
     emb_gen    = EmbeddingGenerator(max_workers=4)
     texts      = [c["text"] for c in chunked_data]
@@ -158,7 +156,6 @@ def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
     emb_np     = np.array(embeddings).astype("float32")
     logger.info(f"[LOCAL] Embeddings shape: {emb_np.shape} | dtype: {emb_np.dtype}")
 
-    # ── STEP 4: Normalize ──
     logger.info(f"[LOCAL] STEP 5/5 — Normalizing vectors...")
     norms             = np.linalg.norm(emb_np, axis=1, keepdims=True)
     norms[norms == 0] = 1
@@ -173,6 +170,10 @@ def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REMOTE WORKER CALLER
+# Sends the full PDF bytes to a remote worker machine.
+# The worker processes its assigned page range and returns:
+# { "vectors": list (2D, normalized), "chunks": list of dicts }
+# Validates the returned shape before passing to vstack
 # ─────────────────────────────────────────────────────────────────────────────
 async def _call_worker_vectorize(
     worker_url: str,
@@ -180,11 +181,6 @@ async def _call_worker_vectorize(
     start:      int,
     end:        int
 ) -> dict:
-    """
-    Sends the PDF to a remote worker and receives back:
-    { "vectors": np.ndarray (2D), "chunks": list of dicts }
-    Validates shape before returning to prevent vstack crashes.
-    """
     logger.info(f"[WORKER] Sending pages {start}-{end} to worker: {worker_url}")
     async with httpx.AsyncClient(timeout=600) as client:
         try:
@@ -200,9 +196,9 @@ async def _call_worker_vectorize(
                 if result.get("vectors"):
                     vecs = np.array(result["vectors"], dtype=np.float32)
 
-                    # Safety check: must be 2D array (n_chunks, embedding_dim)
+                    # Vectors must be 2D: (n_chunks, embedding_dim)
                     if vecs.ndim != 2:
-                        logger.error(f"[WORKER] ERROR: Worker {worker_url} returned non-2D vectors (shape={vecs.shape}). Skipping this worker.")
+                        logger.error(f"[WORKER] ERROR: Worker {worker_url} returned non-2D vectors (shape={vecs.shape}). Skipping.")
                         return {}
 
                     result["vectors"] = vecs
@@ -221,42 +217,40 @@ async def _call_worker_vectorize(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DISTRIBUTE & BUILD — THE MASTER ORCHESTRATOR
+# Full distributed build pipeline:
+# Step 1 — Count total pages in the PDF
+# Step 2 — Split pages evenly across all nodes (workers + local)
+# Step 3 — Launch all tasks in parallel (workers + local thread)
+# Step 4 — Collect and validate packages from all nodes
+# Step 5 — Build one FAISS index from all collected vectors (single vstack)
+# Step 6 — Save to disk and register in memory
 # ─────────────────────────────────────────────────────────────────────────────
 async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
-    """
-    Full distributed build pipeline:
-    1. Count total pages
-    2. Split pages across all nodes (workers + local)
-    3. Run all tasks in parallel
-    4. Collect and validate packages
-    5. Build FAISS index once from all vectors
-    6. Save to disk cache
-    """
     try:
-        # ── STEP 1: Count pages ──
         logger.info("=" * 60)
         logger.info(f"[MANAGER] Starting distributed build for cache key: {cache_key}")
+
         logger.info(f"[MANAGER] STEP 1/6 — Counting total pages in PDF...")
         reader      = PdfReader(str(file_path))
         total_pages = len(reader.pages)
         num_total   = len(WORKER_URLS) + 1
         logger.info(f"[MANAGER] Total pages: {total_pages} | Total nodes: {num_total} ({len(WORKER_URLS)} remote + 1 local)")
 
-        # ── STEP 2: Split pages ──
         logger.info(f"[MANAGER] STEP 2/6 — Splitting pages across nodes...")
         page_ranges = _split_pages(total_pages, num_total)
         for i, (s, e) in enumerate(page_ranges):
             node_label = f"Worker-{i+1}" if i < len(WORKER_URLS) else "Local"
             logger.info(f"[MANAGER] {node_label} assigned pages {s} -> {e} ({e - s} pages)")
 
-        # ── STEP 3: Launch all tasks in parallel ──
         logger.info(f"[MANAGER] STEP 3/6 — Launching all tasks in parallel...")
 
+        # Remote worker tasks (async HTTP calls)
         worker_tasks = [
             _call_worker_vectorize(url, file_path, r[0], r[1])
             for url, r in zip(WORKER_URLS, page_ranges)
         ]
 
+        # Local task runs in thread pool — runs alongside remote workers
         loop       = asyncio.get_event_loop()
         local_task = loop.run_in_executor(
             executor,
@@ -271,17 +265,15 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
         local_result   = await local_task
         logger.info(f"[MANAGER] All nodes finished. Starting merge...")
 
-        # ── STEP 4: Collect packages ──
         logger.info(f"[MANAGER] STEP 4/6 — Collecting and validating packages from all nodes...")
         all_vectors: List[np.ndarray] = []
         all_chunks:  List[dict]       = []
 
-        # Add local result
+        # Validate and collect local result
         local_vecs = local_result.get("vectors")
         if local_vecs is not None:
             if not isinstance(local_vecs, np.ndarray):
                 local_vecs = np.array(local_vecs, dtype=np.float32)
-            # Validate: must be 2D and non-empty
             if local_vecs.ndim == 2 and local_vecs.shape[0] > 0:
                 all_vectors.append(local_vecs)
                 all_chunks.extend(local_result["chunks"])
@@ -291,10 +283,10 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
         else:
             logger.warning(f"[MANAGER] WARNING: Local build returned no vectors.")
 
-        # Add remote worker results
+        # Validate and collect each remote worker result
         for i, res in enumerate(worker_results):
             worker_label = f"Worker-{i+1} ({WORKER_URLS[i]})"
-            if not res or not res.get("vectors") is not None:
+            if not res or res.get("vectors") is None:
                 logger.warning(f"[MANAGER] WARNING: {worker_label} returned empty result. Skipping.")
                 continue
             vecs = res["vectors"]
@@ -313,7 +305,6 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
 
         logger.info(f"[MANAGER] All packages collected. Total chunks: {len(all_chunks)} | Total vector batches: {len(all_vectors)}")
 
-        # ── STEP 5: Build index ──
         logger.info(f"[MANAGER] STEP 5/6 — Building FAISS index from all vectors (single vstack)...")
         master_vs = VectorStore(max_workers=4)
         master_vs.build_from_distributed(
@@ -323,7 +314,6 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
         )
         logger.info(f"[MANAGER] FAISS index built successfully.")
 
-        # ── STEP 6: Register ──
         logger.info(f"[MANAGER] STEP 6/6 — Registering store in memory...")
         with _vs_lock:
             vector_stores[cache_key] = master_vs
@@ -338,7 +328,7 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
             vs_building.discard(cache_key)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STARTUP — Preload existing caches from disk
+# STARTUP — Preload all existing caches from disk into memory
 # ─────────────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def _preload_caches() -> None:
@@ -364,7 +354,6 @@ def _preload_caches() -> None:
         logger.info(f"[STARTUP] Complete. {len(vector_stores)} stores ready in memory.")
 
     threading.Thread(target=_load_all, daemon=True).start()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ROUTES
@@ -419,14 +408,14 @@ async def ask(request: QuestionRequest):
         logger.info(f"[ASK] File: {file_path.name} | Cache key: {cache_key}")
         logger.info(f"[ASK] Question: {request.question}")
 
-        # Wait if build is in progress
+        # Wait if the vector store is still being built in the background
         wait = 0
         while cache_key in vs_building and wait < 60:
             logger.info(f"[ASK] Vector store is still building for {cache_key}... waiting ({wait}s)")
             await asyncio.sleep(1)
             wait += 1
 
-        # Try to load from disk or build
+        # Try to load from disk if not already in memory
         if cache_key not in vector_stores:
             logger.info(f"[ASK] Store not in memory. Trying to load from disk...")
             vs = VectorStore(max_workers=4)

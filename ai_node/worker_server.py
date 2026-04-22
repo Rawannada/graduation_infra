@@ -25,6 +25,9 @@ except ImportError:
     except ImportError:
         PDFSummarizer = None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -32,6 +35,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("WORKER_NODE")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# APP & MIDDLEWARE
+# ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Distributed Processing Worker")
 app.add_middleware(
     CORSMiddleware,
@@ -40,37 +46,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STARTUP
+# ─────────────────────────────────────────────────────────────────────────────
 embedding_generator = EmbeddingGenerator(max_workers=4)
 summarizer_engine   = PDFSummarizer() if PDFSummarizer else None
 
-logger.info("Worker node started.")
-logger.info(f"Summarization capability: {'ENABLED' if summarizer_engine else 'DISABLED'}")
-
+logger.info("=" * 60)
+logger.info("[STARTUP] Worker node is starting...")
+logger.info(f"[STARTUP] Embedding model loaded: {embedding_generator.model_name}")
+logger.info(f"[STARTUP] Summarization capability: {'ENABLED' if summarizer_engine else 'DISABLED'}")
+logger.info("[STARTUP] Worker is ready and listening for tasks.")
+logger.info("=" * 60)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEALTH CHECK
+# Manager calls this to verify the worker is alive before sending tasks
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/")
 def health_check():
-    logger.info("Health check requested.")
+    logger.info("[HEALTH] Health check requested by manager.")
     return {
         "status": "ready",
         "capabilities": ["vectorization", "summarization" if summarizer_engine else "none"]
     }
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# SUMMARIZATION
+# SUMMARIZATION ENDPOINT
+# Receives PDF bytes + page range, extracts text, summarizes via Ollama,
+# and returns a partial summary string back to the manager
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process_summary")
 async def process_summary_fragment(
-    file: UploadFile = File(...),
-    startPage: int = Form(...),
-    endPage:   int = Form(...)
+    file:      UploadFile = File(...),
+    startPage: int        = Form(...),
+    endPage:   int        = Form(...)
 ):
     logger.info("=" * 60)
-    logger.info(f"[SUMMARIZE] New task received.")
-    logger.info(f"[SUMMARIZE] File: {file.filename} | Pages: {startPage} -> {endPage}")
+    logger.info(f"[SUMMARIZE] New summarization task received.")
+    logger.info(f"[SUMMARIZE] File: {file.filename} | Assigned pages: {startPage} -> {endPage}")
 
     if not summarizer_engine:
         logger.error("[SUMMARIZE] ERROR: Summarizer engine is not installed on this worker.")
@@ -80,6 +94,7 @@ async def process_summary_fragment(
         logger.info("[SUMMARIZE] STEP 1/3 — Reading uploaded PDF bytes...")
         file_content = await file.read()
         pdf_stream   = io.BytesIO(file_content)
+        logger.info(f"[SUMMARIZE] PDF received. Size: {len(file_content)} bytes.")
 
         logger.info("[SUMMARIZE] STEP 2/3 — Extracting text from assigned pages...")
         processor  = PDFProcessor(pdf_stream)
@@ -110,31 +125,38 @@ async def process_summary_fragment(
         return {"partial_summary": partial_summary}
 
     except Exception as e:
-        logger.error(f"[SUMMARIZE] ERROR: Task failed — {str(e)}")
+        logger.error(f"[SUMMARIZE] ERROR: Task failed — {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# VECTORIZATION
+# VECTORIZATION ENDPOINT
+# Receives PDF bytes + page range from the manager.
+# Pipeline:
+#   Step 1 — Read the uploaded PDF bytes into memory
+#   Step 2 — Extract and section text from the assigned page range
+#   Step 3 — Split sections into chunks (max 100 words each)
+#   Step 4 — Generate embeddings via local Ollama (parallel)
+#   Step 5 — Normalize vectors for cosine similarity
+# Returns: { "status", "vectors": list (2D), "chunks": list of dicts }
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process")
 async def process_vectors(
-    file: UploadFile = File(...),
-    startPage: int = Form(...),
-    endPage:   int = Form(...)
+    file:      UploadFile = File(...),
+    startPage: int        = Form(...),
+    endPage:   int        = Form(...)
 ):
     logger.info("=" * 60)
-    logger.info(f"[VECTORIZE] New task received.")
-    logger.info(f"[VECTORIZE] File: {file.filename} | Pages: {startPage} -> {endPage}")
+    logger.info(f"[VECTORIZE] New vectorization task received.")
+    logger.info(f"[VECTORIZE] File: {file.filename} | Assigned pages: {startPage} -> {endPage}")
 
     try:
-        # ── STEP 1: Read PDF ──
+        # Step 1: Read PDF bytes
         logger.info("[VECTORIZE] STEP 1/5 — Reading uploaded PDF bytes...")
         file_content = await file.read()
         pdf_stream   = io.BytesIO(file_content)
         logger.info(f"[VECTORIZE] PDF received. Size: {len(file_content)} bytes.")
 
-        # ── STEP 2: Extract text ──
+        # Step 2: Extract text from assigned pages
         logger.info("[VECTORIZE] STEP 2/5 — Extracting text from assigned pages...")
         processor  = PDFProcessor(pdf_stream)
         pages_data = processor.process_pdf(
@@ -149,7 +171,7 @@ async def process_vectors(
             logger.warning("[VECTORIZE] WARNING: No text found in assigned page range. Returning empty package.")
             return {"chunks": [], "vectors": []}
 
-        # ── STEP 3: Chunking ──
+        # Step 3: Split into chunks
         logger.info("[VECTORIZE] STEP 3/5 — Splitting sections into chunks (max 100 words each)...")
         chunked_data = []
         for section in pages_data:
@@ -163,14 +185,14 @@ async def process_vectors(
                 })
         logger.info(f"[VECTORIZE] Total chunks ready for embedding: {len(chunked_data)}")
 
-        # ── STEP 4: Embed ──
+        # Step 4: Generate embeddings via local Ollama
         logger.info("[VECTORIZE] STEP 4/5 — Sending chunks to Ollama for embedding (parallel)...")
         texts      = [c["text"] for c in chunked_data]
         embeddings = embedding_generator.embed_documents(texts)
         emb_np     = np.array(embeddings).astype("float32")
         logger.info(f"[VECTORIZE] Embeddings generated. Shape: {emb_np.shape} | dtype: {emb_np.dtype}")
 
-        # ── STEP 5: Normalize ──
+        # Step 5: Normalize vectors
         logger.info("[VECTORIZE] STEP 5/5 — Normalizing vectors before sending to manager...")
         norms             = np.linalg.norm(emb_np, axis=1, keepdims=True)
         norms[norms == 0] = 1
@@ -185,10 +207,11 @@ async def process_vectors(
         }
 
     except Exception as e:
-        logger.error(f"[VECTORIZE] ERROR: Task failed — {str(e)}")
+        logger.error(f"[VECTORIZE] ERROR: Task failed — {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
     import uvicorn
+    # 0.0.0.0 allows the manager machine to reach this worker over the network
     uvicorn.run(app, host="0.0.0.0", port=8001)
