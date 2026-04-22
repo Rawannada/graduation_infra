@@ -22,7 +22,7 @@ export default function Code() {
     }
 
     try {
-      const response = await axios.patch("/api/users/confirmEmail", {
+      const response = await axios.patch("/users/confirmEmail", {
         email,
         OTP,
       });

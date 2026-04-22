@@ -15,7 +15,7 @@ export default function AuthProvider({ children }) {
       return;
     }
 
-    fetch("/api/users/profile", {
+    fetch("/users/profile", {
       headers: {
         Authorization: `bearer ${accessToken}`,
       },

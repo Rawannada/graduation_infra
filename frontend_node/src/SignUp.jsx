@@ -21,30 +21,30 @@ export default function Signup() {
     userName: "",
     password: "",
     confirmPassword: "",
-   
+
   };
   const [loading, setLoading] = React.useState(false);
 
   async function signupfun(values) {
     setLoading(true);
     try {
-     const response= await axios.post("/api/users/signUp", {
+      const response = await axios.post("/users/signUp", {
         email: values.email,
         userName: values.userName,
         password: values.password,
         cPassword: values.confirmPassword,
       });
-console.log({
-  email: values.email,
-  userName: values.userName,
-  password: values.password,
-  cPassword: values.confirmPassword,
-});
-console.log(response.data);
-console.log(values);
+      console.log({
+        email: values.email,
+        userName: values.userName,
+        password: values.password,
+        cPassword: values.confirmPassword,
+      });
+      console.log(response.data);
+      console.log(values);
       // نحفظ الإيميل للـ OTP
       localStorage.setItem("email", values.email);
-        localStorage.setItem("accessToken", response.data.accessToken);
+      localStorage.setItem("accessToken", response.data.accessToken);
       navigate("/code");
     } catch (err) {
       setLoading(false);
@@ -57,17 +57,17 @@ console.log(values);
     validationSchema: Yup.object().shape({
       userName: Yup.string().trim()
         .min(3, "Name must be at least 3 characters").max(30, "Name must be at most 30 characters")
-       
+
         .required("Name is required"),
       email: Yup.string()
         .email("Invalid email address")
         .required("Email is required"),
       password: Yup.string()
-    .matches(
-      /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/, 
-      "Password must be at least 8 characters, include letters and numbers"
-    )
-    .required("Password is required"),
+        .matches(
+          /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/,
+          "Password must be at least 8 characters, include letters and numbers"
+        )
+        .required("Password is required"),
       confirmPassword: Yup.string()
         .oneOf([Yup.ref("password"), null], "Passwords must match")
         .required("Confirm Password is required"),
@@ -76,7 +76,7 @@ console.log(values);
 
   return (
     <AuthLayout>
-      <Authcard width="531px" height="484px "margintop="140px">
+      <Authcard width="531px" height="484px " margintop="140px">
         <AuthHeader
           title="Create a workspace"
           subtitle={
@@ -158,8 +158,8 @@ console.log(values);
           {/* <input style={{marginTop:"20px", width:"385px", height:"52px", borderRadius:"24px", border:"1px solid #CDCDCD", padding:"10px"}} type="text" placeholder='code'  /> */}
 
           <button type="submit" className="auth-button" disabled={loading}>
-  {loading ? "Signing Up..." : "Sign Up"}
-</button>
+            {loading ? "Signing Up..." : "Sign Up"}
+          </button>
           <button
             onClick={() => navigate("/Login")}
             type="button"
