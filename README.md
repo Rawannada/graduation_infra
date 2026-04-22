@@ -141,14 +141,6 @@ Distribute the PDF pages across multiple machines that work in parallel, then me
 
 ---
 
-## 6. Setting Up a Worker Machine
-
-### Requirements
-
-- Python 3.10+
-- Ollama installed and running on port 11434
-- Same embedding model: `nomic-embed-text`
-
 
 
 ## Running the System
