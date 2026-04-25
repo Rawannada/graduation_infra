@@ -12,9 +12,6 @@ from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 from pypdf import PdfReader
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LIBRARY PATHS
-# ─────────────────────────────────────────────────────────────────────────────
 sys.path.append(str(Path(__file__).parent))
 sys.path.append(str(Path(__file__).parent / "pdf_summarizer" / "src"))
 
@@ -57,7 +54,6 @@ executor = ThreadPoolExecutor(max_workers=4)
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-# Base path for uploaded files (WSL path from Windows)
 WSL_BASE_PATH = Path(r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node")
 
 # Add each worker machine IP here when they run worker_server.py
@@ -81,8 +77,6 @@ class QuestionRequest(BaseModel):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATH RESOLVER
-# Resolves the incoming file path from Node backend to the actual disk path
-# Handles both WSL paths and direct paths
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_clean_path(raw_path: str) -> Path:
     p = Path(raw_path)
@@ -101,9 +95,6 @@ def _get_clean_path(raw_path: str) -> Path:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE SPLITTER
-# Splits total pages evenly across all nodes (remote workers + local)
-# Example: 30 pages, 3 nodes -> [(0,10), (10,20), (20,30)]
-# The last node always gets the remainder to avoid missing any pages
 # ─────────────────────────────────────────────────────────────────────────────
 def _split_pages(total_pages: int, num_workers: int) -> List[tuple]:
     chunk_size = total_pages // num_workers
@@ -116,9 +107,9 @@ def _split_pages(total_pages: int, num_workers: int) -> List[tuple]:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOCAL PARTIAL BUILD
-# Runs on the manager machine — processes its assigned page range locally.
-# Returns the same structure as remote workers:
-# { "vectors": np.ndarray (2D, normalized), "chunks": list of dicts }
+# Processes a specific page range locally.
+# Used both for the manager's own assigned range AND as fallback
+# when a remote worker fails or is unreachable.
 # ─────────────────────────────────────────────────────────────────────────────
 def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
     from embeddings import EmbeddingGenerator
@@ -163,17 +154,10 @@ def _build_local_partial(file_path: Path, start: int, end: int) -> dict:
     logger.info(f"[LOCAL] Normalization done. Shape: {normalized.shape}")
 
     logger.info(f"[LOCAL] Task COMPLETE. {len(chunked_data)} chunks ready for merge.")
-    return {
-        "vectors": normalized,
-        "chunks":  chunked_data,
-    }
+    return {"vectors": normalized, "chunks": chunked_data}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REMOTE WORKER CALLER
-# Sends the full PDF bytes to a remote worker machine.
-# The worker processes its assigned page range and returns:
-# { "vectors": list (2D, normalized), "chunks": list of dicts }
-# Validates the returned shape before passing to vstack
 # ─────────────────────────────────────────────────────────────────────────────
 async def _call_worker_vectorize(
     worker_url: str,
@@ -192,23 +176,18 @@ async def _call_worker_vectorize(
             if response.status_code == 200:
                 result = response.json()
                 logger.info(f"[WORKER] Response received from {worker_url}. Validating vectors...")
-
                 if result.get("vectors"):
                     vecs = np.array(result["vectors"], dtype=np.float32)
-
-                    # Vectors must be 2D: (n_chunks, embedding_dim)
                     if vecs.ndim != 2:
-                        logger.error(f"[WORKER] ERROR: Worker {worker_url} returned non-2D vectors (shape={vecs.shape}). Skipping.")
+                        logger.error(f"[WORKER] ERROR: Non-2D vectors from {worker_url}. Skipping.")
                         return {}
-
                     result["vectors"] = vecs
                     logger.info(f"[WORKER] Vectors validated. Shape: {vecs.shape} from {worker_url}")
                 else:
-                    logger.warning(f"[WORKER] WARNING: Worker {worker_url} returned empty vectors.")
-
+                    logger.warning(f"[WORKER] WARNING: Empty vectors from {worker_url}.")
                 return result
 
-            logger.error(f"[WORKER] ERROR: Worker {worker_url} returned HTTP {response.status_code}. Skipping.")
+            logger.error(f"[WORKER] ERROR: HTTP {response.status_code} from {worker_url}. Skipping.")
             return {}
 
         except Exception as e:
@@ -216,14 +195,13 @@ async def _call_worker_vectorize(
             return {}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DISTRIBUTE & BUILD — THE MASTER ORCHESTRATOR
-# Full distributed build pipeline:
-# Step 1 — Count total pages in the PDF
-# Step 2 — Split pages evenly across all nodes (workers + local)
-# Step 3 — Launch all tasks in parallel (workers + local thread)
-# Step 4 — Collect and validate packages from all nodes
-# Step 5 — Build one FAISS index from all collected vectors (single vstack)
-# Step 6 — Save to disk and register in memory
+# DISTRIBUTE & BUILD
+# Step 1 — Count total pages
+# Step 2 — Split pages across all nodes (workers + local)
+# Step 3 — Launch all tasks in parallel
+# Step 4 — Collect results; if a worker fails → fallback to local build
+# Step 5 — Build one FAISS index from all vectors
+# Step 6 — Save and register in memory
 # ─────────────────────────────────────────────────────────────────────────────
 async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
     try:
@@ -244,13 +222,11 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
 
         logger.info(f"[MANAGER] STEP 3/6 — Launching all tasks in parallel...")
 
-        # Remote worker tasks (async HTTP calls)
         worker_tasks = [
             _call_worker_vectorize(url, file_path, r[0], r[1])
             for url, r in zip(WORKER_URLS, page_ranges)
         ]
 
-        # Local task runs in thread pool — runs alongside remote workers
         loop       = asyncio.get_event_loop()
         local_task = loop.run_in_executor(
             executor,
@@ -269,35 +245,65 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
         all_vectors: List[np.ndarray] = []
         all_chunks:  List[dict]       = []
 
-        # Validate and collect local result
+        # Collect local result
         local_vecs = local_result.get("vectors")
-        if local_vecs is not None:
-            if not isinstance(local_vecs, np.ndarray):
-                local_vecs = np.array(local_vecs, dtype=np.float32)
+        if local_vecs is not None and isinstance(local_vecs, np.ndarray):
             if local_vecs.ndim == 2 and local_vecs.shape[0] > 0:
                 all_vectors.append(local_vecs)
                 all_chunks.extend(local_result["chunks"])
                 logger.info(f"[MANAGER] Local result accepted: {local_vecs.shape[0]} vectors.")
             else:
-                logger.warning(f"[MANAGER] WARNING: Local result returned invalid shape {local_vecs.shape}. Skipping.")
+                logger.warning(f"[MANAGER] WARNING: Local result invalid shape. Skipping.")
         else:
             logger.warning(f"[MANAGER] WARNING: Local build returned no vectors.")
 
-        # Validate and collect each remote worker result
+        # Collect worker results — fallback to local build if worker failed
         for i, res in enumerate(worker_results):
             worker_label = f"Worker-{i+1} ({WORKER_URLS[i]})"
-            if not res or res.get("vectors") is None:
-                logger.warning(f"[MANAGER] WARNING: {worker_label} returned empty result. Skipping.")
+            worker_start = page_ranges[i][0]
+            worker_end   = page_ranges[i][1]
+
+            vecs = res.get("vectors") if res else None
+
+            # ── FALLBACK: worker failed → build its pages locally ──
+            if vecs is None or (isinstance(vecs, np.ndarray) and vecs.shape[0] == 0):
+                logger.warning(
+                    f"[MANAGER] WARNING: {worker_label} failed or returned empty result. "
+                    f"Falling back to local build for pages {worker_start}-{worker_end}..."
+                )
+                fallback = await loop.run_in_executor(
+                    executor,
+                    _build_local_partial,
+                    file_path,
+                    worker_start,
+                    worker_end,
+                )
+                fallback_vecs = fallback.get("vectors")
+                if (
+                    fallback_vecs is not None
+                    and isinstance(fallback_vecs, np.ndarray)
+                    and fallback_vecs.ndim == 2
+                    and fallback_vecs.shape[0] > 0
+                ):
+                    all_vectors.append(fallback_vecs)
+                    all_chunks.extend(fallback["chunks"])
+                    logger.info(
+                        f"[MANAGER] Fallback for {worker_label} complete: "
+                        f"{fallback_vecs.shape[0]} vectors from pages {worker_start}-{worker_end}."
+                    )
+                else:
+                    logger.error(f"[MANAGER] ERROR: Fallback also returned no vectors for pages {worker_start}-{worker_end}.")
                 continue
-            vecs = res["vectors"]
+
             if not isinstance(vecs, np.ndarray):
                 vecs = np.array(vecs, dtype=np.float32)
+
             if vecs.ndim == 2 and vecs.shape[0] > 0:
                 all_vectors.append(vecs)
                 all_chunks.extend(res.get("chunks", []))
                 logger.info(f"[MANAGER] {worker_label} accepted: {vecs.shape[0]} vectors.")
             else:
-                logger.error(f"[MANAGER] ERROR: {worker_label} returned invalid shape {vecs.shape}. Skipping.")
+                logger.error(f"[MANAGER] ERROR: {worker_label} returned invalid shape {vecs.shape}.")
 
         if not all_vectors:
             logger.error("[MANAGER] ERROR: No valid vectors collected from any node. Build aborted.")
@@ -328,7 +334,7 @@ async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
             vs_building.discard(cache_key)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STARTUP — Preload all existing caches from disk into memory
+# STARTUP
 # ─────────────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def _preload_caches() -> None:
@@ -336,21 +342,18 @@ def _preload_caches() -> None:
         logger.info("[STARTUP] Server starting — scanning cache directory...")
         index_files = list(CACHE_DIR.glob("*.index"))
         logger.info(f"[STARTUP] Found {len(index_files)} cached index files in {CACHE_DIR}")
-
         for index_file in index_files:
             try:
                 cache_id = index_file.stem
-                logger.info(f"[STARTUP] Loading cache: {index_file.name}...")
                 vs = VectorStore(max_workers=4)
                 if vs.load(cache_id):
                     with _vs_lock:
                         vector_stores[cache_id] = vs
                     logger.info(f"[STARTUP] Loaded: {index_file.name} ({len(vs.documents)} chunks)")
                 else:
-                    logger.warning(f"[STARTUP] WARNING: Failed to load {index_file.name} — skipping.")
+                    logger.warning(f"[STARTUP] WARNING: Failed to load {index_file.name}")
             except Exception as e:
                 logger.warning(f"[STARTUP] WARNING: Error loading {index_file.name} — {str(e)}")
-
         logger.info(f"[STARTUP] Complete. {len(vector_stores)} stores ready in memory.")
 
     threading.Thread(target=_load_all, daemon=True).start()
@@ -408,14 +411,12 @@ async def ask(request: QuestionRequest):
         logger.info(f"[ASK] File: {file_path.name} | Cache key: {cache_key}")
         logger.info(f"[ASK] Question: {request.question}")
 
-        # Wait if the vector store is still being built in the background
         wait = 0
         while cache_key in vs_building and wait < 60:
             logger.info(f"[ASK] Vector store is still building for {cache_key}... waiting ({wait}s)")
             await asyncio.sleep(1)
             wait += 1
 
-        # Try to load from disk if not already in memory
         if cache_key not in vector_stores:
             logger.info(f"[ASK] Store not in memory. Trying to load from disk...")
             vs = VectorStore(max_workers=4)
@@ -424,7 +425,7 @@ async def ask(request: QuestionRequest):
                     vector_stores[cache_key] = vs
                 logger.info(f"[ASK] Successfully loaded from disk: {cache_key}")
             else:
-                logger.info(f"[ASK] Not on disk either. Triggering full distributed build...")
+                logger.info(f"[ASK] Not on disk. Triggering full distributed build...")
                 with _vs_lock:
                     vs_building.add(cache_key)
                 await _distribute_and_build(file_path, cache_key)
