@@ -7,19 +7,13 @@ import { AppError } from "../utils/ClassError";
 export const allowedExtensions = {
   image: ["image/jpeg", "image/png"],
   video: ["video/mp4"],
-  pdf: [
-    "application/pdf",
-    "application/x-pdf",
-    "application/vnd.adobe.pdf"
-  ]
+  pdf: ["application/pdf", "application/x-pdf", "application/vnd.adobe.pdf"],
+  csv: ["text/csv", "application/csv", "application/vnd.ms-excel"],
 };
 
 export const MulterLocal = ({ customExtensions = [] as string[] } = {}) => {
-
   const storage = multer.diskStorage({
-
     destination: function (req: Request, file: Express.Multer.File, cb) {
-
       const userId = req.user?._id;
 
       if (!userId) {
@@ -36,20 +30,16 @@ export const MulterLocal = ({ customExtensions = [] as string[] } = {}) => {
     },
 
     filename: function (req: Request, file: Express.Multer.File, cb) {
-
       const uniqueName = `${Date.now()}-${file.originalname}`;
       cb(null, uniqueName);
-
-    }
-
+    },
   });
 
   const fileFilter = (
     req: Request,
     file: Express.Multer.File,
-    cb: FileFilterCallback
+    cb: FileFilterCallback,
   ) => {
-
     if (customExtensions.length && !customExtensions.includes(file.mimetype)) {
       return cb(new AppError("Invalid file type", 400));
     }

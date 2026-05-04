@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { FileRepository } from "../../DB/repositories/file.repository";
-import fileModel from "../../DB/models/File.model";
+import fileModel, { IFile } from "../../DB/models/File.model";
 import fs from "fs";
 import { AppError } from "../../utils/ClassError";
 import axios from "axios";
@@ -29,10 +29,66 @@ function deduplicateSources(sources: Source[]): Source[] {
 class AiService {
   constructor() {
     this.aiBaseUrl = process.env.AI_SERVICE_URL || "http://localhost:8000";
+    this.aiBaseUrlCsv = process.env.AI_CSV_URL || "http://localhost:5001";
   }
   private _fileModel = new FileRepository(fileModel);
   private _chatModel = new ChatRepository(chatModel);
   private aiBaseUrl: string;
+  private aiBaseUrlCsv: string;
+
+  private transformSuggestions(aiData: any) {
+    if (!aiData?.suggestions) return [];
+
+    return aiData.suggestions.map((s: any) => ({
+      id: s.id,
+      title: s.title,
+      description: s.description,
+      chartType: s.type,
+
+      mapping: {
+        ...(s.x_col && {
+          x: {
+            column: s.x_col,
+            type: this.inferType(s.x_col),
+          },
+        }),
+
+        ...(s.y_col && {
+          y: {
+            column: s.y_col,
+            type: this.inferType(s.y_col),
+          },
+        }),
+
+        ...(s.color_col && {
+          color: {
+            column: s.color_col,
+            type: this.inferType(s.color_col),
+          },
+        }),
+      },
+
+      options: {
+        aggregation: s.agg,
+      },
+    }));
+  }
+
+  private inferType(column: string): "number" | "string" | "date" {
+    const col = column.toLowerCase();
+
+    if (col.includes("date") || col.includes("time")) return "date";
+
+    if (
+      col.includes("price") ||
+      col.includes("amount") ||
+      col.includes("revenue") ||
+      col.includes("count")
+    )
+      return "number";
+
+    return "string";
+  }
 
   summarize = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -70,10 +126,7 @@ class AiService {
 
       const response = await axios.post(
         `${this.aiBaseUrl}/api/summarize`,
-        {
-          filePath,
-          fileId: String(fileId)
-        },
+        { filePath },
         {
           timeout: 600000,
           httpAgent: new http.Agent({ keepAlive: true }),
@@ -82,6 +135,7 @@ class AiService {
       );
 
       const summary = response.data.summary;
+      // const summary = "Baheb sara awiii agmal wahda fel team amora w gamela bgad yaayyyyy";
 
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },
@@ -125,7 +179,6 @@ class AiService {
         {
           filePath,
           question,
-          fileId: String(fileId),
         },
         {
           timeout: 600000,
@@ -134,6 +187,13 @@ class AiService {
         },
       );
 
+      // const answer: string = `lololollolo`;
+      // let sources = [
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 1 },
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 3 },
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 4 },
+      //   { source: "Networking Fundamentals lesson -5-.pdf", page: 4 },
+      // ];
       const answer: string = response.data.answer;
       let sources: Source[] = response.data.sources;
 
@@ -189,6 +249,162 @@ class AiService {
       }
       next(error);
     }
+  };
+
+  chartOptions = async (req: Request, res: Response, next: NextFunction) => {
+    const { fileId } = req.params;
+    const userId = req.user?._id?.toString();
+
+    if (!userId) throw new AppError("Invalid userId", 401);
+    if (!fileId) throw new AppError("Invalid fileId", 400);
+
+    const file = await this._fileModel.findOne({ _id: fileId });
+    if (!file) throw new AppError("File not found", 404);
+
+    if (file.userId.toString() !== userId) {
+      throw new AppError("Unauthorized", 403);
+    }
+
+    if (file.fileType !== "csv") {
+      throw new AppError("Only CSV supported", 400);
+    }
+
+    if (!file.autoclean) {
+      throw new AppError("File not ready for charts", 400);
+    }
+
+    const response = await axios.post(
+      `${this.aiBaseUrlCsv}/suggest`,
+      {
+        file_id: fileId,
+      },
+      {
+        timeout: 600000,
+      },
+    );
+
+    const { suggestions, source } = response.data;
+
+    // const suggestions = [
+    //   { type: "bar", x: "category", y: "sales", title: "Sales by Category" },
+    //   { type: "scatter", x: "lollll", y: "saraaaaa", title: "Sales by sss" },
+    // ];
+
+    if (!suggestions || !Array.isArray(suggestions)) {
+      throw new AppError("Invalid AI response", 500);
+    }
+
+    const transformedCharts = suggestions.map((chart: any, index: number) => {
+      const mapping: any = {};
+
+      if (chart.x) {
+        mapping.x = {
+          column: chart.x,
+          type: "string",
+        };
+      }
+
+      if (chart.y) {
+        mapping.y = {
+          column: chart.y,
+          type: "number",
+        };
+      }
+
+      return {
+        id: `chart_${index + 1}`,
+        title: chart.title,
+        chartType: chart.type,
+        mapping,
+      };
+    });
+
+    file.charts = transformedCharts;
+    await file.save();
+
+    return res.status(200).json({
+      message: "Charts suggested successfully",
+      charts: transformedCharts,
+    });
+  };
+
+  visualizeCharts = async (req: Request, res: Response, next: NextFunction) => {
+    const { fileId } = req.params;
+    const { selectedCharts } = req.body;
+    const userId = req.user?._id?.toString();
+
+    if (!fileId) throw new AppError("Invalid fileId", 400);
+    if (!selectedCharts || !Array.isArray(selectedCharts)) {
+      throw new AppError("selectedCharts must be an array", 400);
+    }
+
+    const file = await this._fileModel.findOne({ _id: fileId });
+    if (!file) throw new AppError("File not found", 404);
+
+    if (file.userId.toString() !== userId) {
+      throw new AppError("Unauthorized", 403);
+    }
+
+    if (file.fileType !== "csv") {
+      throw new AppError("Only CSV supported", 400);
+    }
+
+    const chartsToSend = file.charts?.filter((chart) =>
+      selectedCharts.includes(chart.id),
+    );
+
+    if (!chartsToSend || chartsToSend.length === 0) {
+      throw new AppError("No valid charts selected", 400);
+    }
+
+    const response = await axios.post(
+      `${this.aiBaseUrlCsv}/render`,
+      {
+        file_id: fileId,
+        charts: chartsToSend.map((c) => ({
+          type: c.chartType,
+          x: c.mapping?.x?.column ?? null,
+          y: c.mapping?.y?.column ?? null,
+        })),
+      },
+      { timeout: 600000 },
+    );
+
+    const aiCharts = response.data.charts;
+
+    // const aiCharts = [
+    //   {
+    //     success: true,
+    //     fig: { },
+    //     title: "Sales by Category",
+    //   },
+    // ];
+
+    if (!aiCharts || !Array.isArray(aiCharts)) {
+      throw new AppError("Invalid AI response", 500);
+    }
+
+    const figMap = new Map(aiCharts.map((c: any) => [c.title, c]));
+
+    file.charts = file.charts?.map((chart) => {
+      const aiChart = figMap.get(chart.title);
+
+      if (aiChart?.success) {
+        return {
+          ...chart,
+          fig: aiChart.fig,
+        };
+      }
+
+      return chart;
+    });
+
+    await file.save();
+
+    return res.status(200).json({
+      message: "Charts rendered successfully",
+      charts: aiCharts,
+    });
   };
 }
 

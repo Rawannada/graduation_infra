@@ -1,14 +1,22 @@
 import { NextFunction, Request, Response } from "express";
 import { AppError } from "../../utils/ClassError";
 import { FileRepository } from "../../DB/repositories/file.repository";
-import fileModel from "../../DB/models/File.model";
-import fs from "fs/promises";
+import fileModel, { IFile } from "../../DB/models/File.model";
 import { CategoryRepository } from "../../DB/repositories/category.repository";
 import categoryModel from "../../DB/models/category.model";
-
+import axios from "axios";
+import { unlink } from "fs/promises";
 class UploadService {
+  private aiBaseUrlCsv: string;
+  private aiBaseUrlPdf: string;
+
+  constructor() {
+    this.aiBaseUrlCsv = process.env.AI_CSV_URL || "http://localhost:5001";
+    this.aiBaseUrlPdf = process.env.AI_PDF_URL || "http://localhost:8000";
+  }
   private _fileModel = new FileRepository(fileModel);
   private _categoryModel = new CategoryRepository(categoryModel);
+
 
   upload = async (req: Request, res: Response, next: NextFunction) => {
     const file = (req as any).file as Express.Multer.File | undefined;
@@ -29,6 +37,7 @@ class UploadService {
       categoryId: generalCategory?._id!,
       fileName: req?.file?.filename!,
       path: req?.file?.path!,
+      fileType: "pdf",
     });
 
     return res.status(200).json({ message: "File uploaded successfully", pdf });
@@ -70,7 +79,7 @@ class UploadService {
     if (req?.user?._id.toString() !== file.userId.toString())
       throw new AppError("You are not authorized", 401);
 
-    await fs.unlink(file.path);
+    await unlink(file.path);
     await this._fileModel.findOneAndDelete({ _id: fileId });
 
     return res.status(200).json({ message: "File deleted" });
@@ -340,6 +349,7 @@ class UploadService {
       categoryId: category?._id!,
       fileName: file.filename,
       path: file.path,
+      fileType: "pdf",
     });
 
     const cleanFileName = newFile.fileName.replace(/^\d+-/, "");
@@ -351,6 +361,69 @@ class UploadService {
         fileName: cleanFileName,
       },
       url: `${req.protocol}://${req.get("host")}/uploads/${file.filename}`,
+    });
+  };
+
+  uploadCSVFile = async (req: Request, res: Response, next: NextFunction) => {
+    const file = (req as any).file as Express.Multer.File | undefined;
+    const userId = req?.user?._id;
+
+    if (!file || !file.path || !userId)
+      throw new AppError("Upload failed, Missing file or userId", 400);
+
+    const generalCategory = await this._categoryModel.findOne({
+      userId,
+      categoryName: "General Category",
+    });
+
+    if (!generalCategory) throw new AppError("Category Not Found", 404);
+
+    const CSV = await this._fileModel.create({
+      userId,
+      categoryId: generalCategory._id,
+      fileName: file.filename,
+      path: file.path,
+      fileType: "csv",
+    });
+
+    const aiResponse = await axios.post(
+      `${this.aiBaseUrlCsv}/upload`,
+      {
+        CSV: {
+          _id: CSV._id.toString(),
+          userId: CSV.userId.toString(),
+          categoryId: CSV.categoryId.toString(),
+          fileName: CSV.fileName,
+          path: CSV.path,
+          fileType: CSV.fileType,
+        },
+      },
+      {
+        timeout: 600000,
+      },
+    );
+
+    const autoclean = aiResponse.data.autoclean;
+    // const autoclean : IFile["autoclean"]= {
+    //     status: "success",
+    //     raw_shape: [1000, 12],
+    //     clean_shape: [950, 12],
+    //     rows_removed: 50,
+    //     cleaned_path: "..._autoclean.parquet",
+    //     ready_for_charts: true,
+    // };
+
+    CSV.autoclean = autoclean;
+    await CSV.save();
+
+    const cleanFileName = CSV.fileName.replace(/^\d+-/, "");
+    return res.status(200).json({
+      message: "File uploaded successfully",
+      CSV: {
+        ...CSV.toObject(),
+        fileName: cleanFileName,
+      },
+      autoclean,
     });
   };
 }

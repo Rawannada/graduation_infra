@@ -13,6 +13,12 @@ uploadRouter.post(
     MulterLocal({ customExtensions: allowedExtensions.pdf }).single("file"),
     UPS.upload,
 );
+uploadRouter.post(
+    "/CSV",
+    Authentication(),
+    MulterLocal({ customExtensions: allowedExtensions.csv }).single("file"),
+    UPS.uploadCSVFile,
+);
 uploadRouter.get("/recent", Authentication(), UPS.recentFiles);
 uploadRouter.post(
     "/addFile/:categoryId",

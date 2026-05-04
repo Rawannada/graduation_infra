@@ -1,8 +1,6 @@
-__pycache__/
-*.py[cod]
-logs/
 uploads/
+__pycache__/
+*.pyc
+*.parquet
 .env
-.venv/
 venv/
-**/vs_cache/

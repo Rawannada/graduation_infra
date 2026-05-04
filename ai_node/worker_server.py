@@ -68,7 +68,7 @@ def health_check():
     logger.info("[HEALTH] Health check requested by manager.")
     return {
         "status": "ready",
-        "capabilities": ["vectorization", "summarization" if summarizer_engine else "none"]
+        "capabilities": ["vectorization", "summarization" if summarizer_engine else "none", "combined"]
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,15 +139,20 @@ async def process_summary_fragment(
 #   Step 5 — Normalize vectors for cosine similarity
 # Returns: { "status", "vectors": list (2D), "chunks": list of dicts }
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# COMBINED PROCESSING ENDPOINT
+# Handles both vectorization and summarization
+# ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process")
-async def process_vectors(
+async def process_task(
     file:      UploadFile = File(...),
     startPage: int        = Form(...),
-    endPage:   int        = Form(...)
+    endPage:   int        = Form(...),
+    task_type: str        = Form("vectorize")  # 'vectorize' or 'summarize'
 ):
     logger.info("=" * 60)
-    logger.info(f"[VECTORIZE] New vectorization task received.")
-    logger.info(f"[VECTORIZE] File: {file.filename} | Assigned pages: {startPage} -> {endPage}")
+    logger.info(f"[TASK] New {task_type} task received.")
+    logger.info(f"[TASK] File: {file.filename} | Pages: {startPage}->{endPage}")
 
     try:
         # Step 1: Read PDF bytes
