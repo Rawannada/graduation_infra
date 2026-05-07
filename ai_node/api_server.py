@@ -1,246 +1,523 @@
-import re
-import requests
-from vector_store import VectorStore
+import sys
+import asyncio
+import threading
+import logging
+import numpy as np
+import httpx
+from pathlib import Path
+from typing import Dict, List
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor
+from pypdf import PdfReader
 
+sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent / "pdf_summarizer" / "src"))
 
-class RAGPipeline:
-    def __init__(self, vector_store: VectorStore, llm_model: str = "llama3"):
-        self.vector_store = vector_store
-        self.llm_model    = llm_model
-        self.url          = "http://localhost:11434/api/generate"
+from vector_store import VectorStore, CACHE_DIR, _cache_key
+from rag_pipeline import RAGPipeline
+from pdf_processor import PDFProcessor
 
-    # ─────────────────────────────────────────
-    # ACRONYM DICTIONARY
-    # Used to expand abbreviations in queries so they match document text
-    # that may use either the short or full form
-    # ─────────────────────────────────────────
-    ACRONYM_EXPANSIONS = {
-        "LAN":   "Local Area Network",
-        "WAN":   "Wide Area Network",
-        "MAN":   "Metropolitan Area Network",
-        "PAN":   "Personal Area Network",
-        "TCP":   "Transmission Control Protocol",
-        "UDP":   "User Datagram Protocol",
-        "IP":    "Internet Protocol",
-        "HTTP":  "Hypertext Transfer Protocol",
-        "HTTPS": "Hypertext Transfer Protocol Secure",
-        "DNS":   "Domain Name System",
-        "DHCP":  "Dynamic Host Configuration Protocol",
-        "MAC":   "Media Access Control",
-        "OSI":   "Open Systems Interconnection",
-        "NAT":   "Network Address Translation",
-        "VPN":   "Virtual Private Network",
-        "FTP":   "File Transfer Protocol",
-        "SMTP":  "Simple Mail Transfer Protocol",
-        "NIC":   "Network Interface Card",
-        "STP":   "Spanning Tree Protocol",
-        "VLAN":  "Virtual Local Area Network",
-    }
+try:
+    from pdf_summarizer.src.summarizer import PDFSummarizer
+except ImportError:
+    from summarizer import PDFSummarizer
 
-    # ─────────────────────────────────────────
-    # STOP WORDS
-    # Common words filtered out during keyword extraction
-    # ─────────────────────────────────────────
-    STOP_WORDS = {
-        "what", "is", "are", "how", "does", "do", "explain", "define",
-        "describe", "tell", "me", "about", "the", "a", "an", "and",
-        "or", "in", "of", "for", "to", "from", "it", "its", "this",
-        "that", "which", "where", "when", "why", "can", "could",
-        "would", "should", "please", "give", "show", "list", "wan",
-    }
+try:
+    from pdf_summarizer.src.chunker import split_into_chunks
+except ImportError:
+    from src.chunker import split_into_chunks
 
-    # ─────────────────────────────────────────
-    # KEYWORD EXTRACTOR
-    # Extracts meaningful tokens from the question.
-    # Expands known acronyms so both forms are searched.
-    # ─────────────────────────────────────────
-    def _extract_keywords(self, question: str) -> list:
-        tokens   = re.findall(r'[A-Za-z0-9/\-]+', question)
-        keywords = []
-        for token in tokens:
-            upper = token.upper()
-            if token.lower() in self.STOP_WORDS:
-                continue
-            if len(token) < 2:
-                continue
-            keywords.append(token)
-            if upper in self.ACRONYM_EXPANSIONS:
-                keywords.append(self.ACRONYM_EXPANSIONS[upper])
-        return list(dict.fromkeys(keywords))
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("AI_SERVER_MANAGER")
 
-    # ─────────────────────────────────────────
-    # COMPOUND QUESTION SPLITTER
-    # Splits multi-part questions like "explain X and Y and Z"
-    # into separate sub-queries so each part gets its own retrieval
-    # ─────────────────────────────────────────
-    def _split_compound_question(self, question: str) -> list:
-        q     = question.strip()
-        parts = re.split(r'\band\b|&|\balso\b', q, flags=re.IGNORECASE)
-        parts = [p.strip().rstrip('?').strip(',').strip() for p in parts]
-        parts = [p for p in parts if len(p) > 3]
+# ─────────────────────────────────────────────────────────────────────────────
+# APP & MIDDLEWARE
+# ─────────────────────────────────────────────────────────────────────────────
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+executor = ThreadPoolExecutor(max_workers=4)
 
-        if len(parts) <= 1:
-            return [question]
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+WSL_BASE_PATH = Path(r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node")
+WORKER_URLS: List[str] = ["http://192.168.1.150:8001"]
 
-        first_part  = parts[0]
-        verb_match  = re.match(
-            r'^(what\s+is|what\s+are|explain|define|describe|'
-            r'how\s+does|how\s+do|tell\s+me\s+about|compare)\s+',
-            first_part, flags=re.IGNORECASE,
-        )
-        prefix  = verb_match.group(0) if verb_match else ""
-        queries = [first_part + "?"]
+vector_stores: Dict[str, VectorStore] = {}
+vs_building:   set                    = set()
+_vs_lock                              = threading.Lock()  # was originally named with a stray unicode char before vs_lock
 
-        for part in parts[1:]:
-            already_has_verb = re.match(
-                r'^(what|explain|define|describe|how|tell|is|are|compare)\b',
-                part, flags=re.IGNORECASE,
-            )
-            if already_has_verb or not prefix:
-                queries.append(part + "?")
-            else:
-                queries.append(prefix + part + "?")
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUEST MODELS
+# ─────────────────────────────────────────────────────────────────────────────
+class SummarizeRequest(BaseModel):
+    filePath: str
+    fileId:   str = None
 
-        return queries
+class QuestionRequest(BaseModel):
+    filePath: str
+    question: str
+    fileId:   str = None
 
-    # ─────────────────────────────────────────
-    # NOT FOUND RESPONSE
-    # Returned when no relevant documents are found in the index
-    # ─────────────────────────────────────────
-    def _not_found_response(self) -> dict:
-        return {
-            "answer": (
-                "I could not find information about this topic in the document. "
-                "Please try rephrasing your question or check if this topic "
-                "is covered in the document."
-            ),
-            "sources": [],
-        }
+# ─────────────────────────────────────────────────────────────────────────────
+# PATH RESOLVER
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_clean_path(raw_path: str) -> Path:
+    p = Path(raw_path)
+    if "uploads" in p.parts:
+        idx           = p.parts.index("uploads")
+        relative_path = Path(*p.parts[idx:])
+    else:
+        relative_path = Path("uploads") / p.name
 
-    # ─────────────────────────────────────────
-    # NOT FOUND CHECKER
-    # Detects whether the LLM response indicates it could not find an answer
-    # ─────────────────────────────────────────
-    def _check_not_found(self, answer: str) -> bool:
-        not_found_phrases = [
-            "not found", "not covered", "no information", "not mentioned",
-            "not discussed", "cannot find", "not present", "not in document",
-            "could not find", "no mention of", "does not appear",
-            "i cannot find", "i can't find",
-            "error communicating", "500 server error", "error generating",
-            "i don't have", "i do not have", "not available",
-        ]
-        answer_lower = answer.lower()
-        return any(phrase in answer_lower for phrase in not_found_phrases)
+    file_path = WSL_BASE_PATH / relative_path
+    if not file_path.exists():
+        if Path(raw_path).exists():
+            return Path(raw_path)
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    return file_path
 
-    # ─────────────────────────────────────────
-    # MAIN QUERY METHOD
-    # Full RAG pipeline:
-    #   1. Split compound question into sub-queries
-    #   2. Retrieve relevant chunks for each sub-query
-    #   3. Deduplicate retrieved chunks
-    #   4. Build context string with source + page + section info
-    #   5. Send prompt to Ollama and return the answer
-    # ─────────────────────────────────────────
-    def query(
-        self,
-        question:            str,
-        use_mmr:             bool = True,
-        use_query_expansion: bool = False
-    ) -> dict:
-        queries = self._split_compound_question(question)
+# ─────────────────────────────────────────────────────────────────────────────
+# CHUNK SPLITTER
+# ─────────────────────────────────────────────────────────────────────────────
+def _split_chunks(total_chunks: int, num_workers: int) -> List[tuple]:
+    chunk_size = total_chunks // num_workers
+    ranges, start = [], 0
+    for i in range(num_workers):
+        end = start + chunk_size if i < num_workers - 1 else total_chunks
+        ranges.append((start, end))
+        start = end
+    return ranges
 
-        seen_keys     = set()
-        relevant_docs = []
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL CHUNK PROCESSOR
+# ─────────────────────────────────────────────────────────────────────────────
+def _process_chunks_locally(chunks: List[dict]) -> dict:
+    from embeddings import EmbeddingGenerator
 
-        for q in queries:
-            keywords = self._extract_keywords(q)
-            if keywords:
-                # Keyword boost: cosine similarity + bonus for keyword matches
-                docs = self.vector_store.search_with_keyword_boost(
-                    q, keywords=keywords, k=4, keyword_bonus=0.4,
-                )
-            elif use_mmr:
-                # MMR: balances relevance and diversity
-                docs = self.vector_store.search_mmr(
-                    q, k=4, fetch_k=12, lambda_mult=0.75,
-                )
-            else:
-                # Basic L2 similarity search
-                docs = self.vector_store.search(q, k=4)
+    try:
+        from pdf_summarizer.src.summarizer import PDFSummarizer
+        summarizer_available = True
+    except ImportError:
+        summarizer_available = False
 
-            for doc in docs:
-                key = f"{doc['source']}::{doc['page']}"
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    relevant_docs.append(doc)
+    logger.info(f"[LOCAL] Processing {len(chunks)} sections locally...")
 
-        # Keep top 6 unique chunks across all sub-queries
-        relevant_docs = relevant_docs[:6]
+    if not chunks:
+        logger.warning("[LOCAL] WARNING: No chunks provided. Returning empty package.")
+        return {"vectors": np.empty((0, 768), dtype="float32"), "chunks": [], "summary": ""}
 
-        if not relevant_docs:
-            return self._not_found_response()
+    # Split sections into smaller chunks — same as worker_server.py /process does
+    # Worker uses split_into_chunks(text, max_words=100) for fine-grained retrieval
+    chunked_data = []
+    for section in chunks:
+        for chunk_text in split_into_chunks(section["text"], max_words=100):
+            chunked_data.append({
+                "text":          chunk_text,
+                "filename":      section.get("filename", "unknown"),
+                "page_num":      section.get("page_num", 0),
+                "section_title": section.get("section_title", ""),
+            })
+    logger.info(f"[LOCAL] Split {len(chunks)} sections into {len(chunked_data)} chunks")
 
-        # Build context string — includes source, page, section title, and text
-        context_parts = []
-        for d in relevant_docs:
-            header = f"[Source: {d['source']}, Page: {d['page']}"
-            if d.get("section_title"):
-                header += f", Section: {d['section_title']}"
-            header += "]"
-            context_parts.append(f"{header}\n{d['text']}")
+    logger.info("[LOCAL] STEP 1/3 — Generating embeddings via Ollama...")
+    emb_gen    = EmbeddingGenerator(max_workers=4)
+    texts      = [c["text"] for c in chunked_data]
+    embeddings = emb_gen.embed_documents(texts)
+    emb_np     = np.array(embeddings).astype("float32")
+    logger.info(f"[LOCAL] Embeddings shape: {emb_np.shape}")
 
-        context = "\n\n".join(context_parts)
+    logger.info("[LOCAL] STEP 2/3 — Normalizing vectors...")
+    norms             = np.linalg.norm(emb_np, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    normalized        = emb_np / norms
+    logger.info(f"[LOCAL] Normalization done. Shape: {normalized.shape}")
 
-        # Build acronym hint line to help the LLM search both forms
-        keywords_all  = self._extract_keywords(question)
-        acronym_hints = [
-            f'"{kw.upper()}" also appears as "{self.ACRONYM_EXPANSIONS[kw.upper()]}"'
-            for kw in keywords_all
-            if kw.upper() in self.ACRONYM_EXPANSIONS
-        ]
-
-        hint_line = ""
-        if acronym_hints:
-            hint_line = (
-                f"\nNOTE: {'; '.join(acronym_hints)}. "
-                "Search for BOTH forms in the context.\n"
-            )
-
-        prompt = f"""You are a helpful document assistant. Use the context below to answer the question.
-{hint_line}
-Rules:
-- Use ONLY the provided context. Do not use outside knowledge.
-- The context includes Section Titles; use them to understand the topic better.
-- You do NOT need a formal definition sentence. If the document discusses or describes the concept anywhere, summarise what it says.
-- Always cite the page number(s), e.g. "(Page 5)".
-- If the question is about multiple topics, address each in its own paragraph.
-- Answer in the same language as the question.
-
-Context:
-{context}
-
-Question: {question}
-Answer:"""
-
+    summary = ""
+    if summarizer_available:
+        logger.info("[LOCAL] STEP 3/3 — Generating summary...")
         try:
-            response = requests.post(
-                self.url,
-                json={"model": self.llm_model, "prompt": prompt, "stream": False},
-                timeout=120,
+            summarizer   = PDFSummarizer()
+            summary, _   = summarizer.summarize_text_with_ollama(
+                text_chunks=texts,
+                model_name=summarizer.model_name,
+                temperature=0.1,
+                max_tokens=512
             )
-            response.raise_for_status()
-            answer = response.json().get("response", "Error generating answer.")
+            logger.info(f"[LOCAL] Summary generated. Length: {len(summary)} characters")
         except Exception as e:
-            answer = f"Error communicating with Ollama: {str(e)}"
+            logger.error(f"[LOCAL] ERROR: Summary generation failed — {str(e)}")
+    else:
+        logger.info("[LOCAL] STEP 3/3 — Skipping summary (summarizer not available)")
 
-        if self._check_not_found(answer):
-            return {"answer": answer, "sources": []}
+    return {"vectors": normalized, "chunks": chunked_data, "summary": summary}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REMOTE WORKER CALLER
+# BUG FIX 2: worker endpoint was /process_chunks but worker_server.py exposes /process
+# Changed to POST /process with multipart form (file + startPage + endPage)
+# because worker_server.py accepts UploadFile not JSON chunks
+# ─────────────────────────────────────────────────────────────────────────────
+async def _call_worker_process_chunks(
+    worker_url:  str,
+    chunks:      List[dict],
+    file_path:   Path,
+    start_page:  int,
+    end_page:    int
+) -> dict:
+    logger.info(f"[WORKER] Sending pages {start_page}-{end_page} to worker: {worker_url}")
+    try:
+        with open(file_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        async with httpx.AsyncClient(timeout=1200) as client:
+            response = await client.post(
+                f"{worker_url}/process",
+                data={"startPage": start_page, "endPage": end_page, "task_type": "both"},
+                files={"file": (file_path.name, pdf_bytes, "application/pdf")},
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(
+                    f"[WORKER] Response from {worker_url}: "
+                    f"{len(result.get('vectors', []))} vectors | "
+                    f"{len(result.get('summary', ''))} summary chars"
+                )
+                if result.get("vectors"):
+                    vecs = np.array(result["vectors"], dtype=np.float32)
+                    if vecs.ndim != 2:
+                        logger.error(f"[WORKER] Non-2D vectors from {worker_url}. Skipping.")
+                        return {}
+                    result["vectors"] = vecs
+                return result
+
+            logger.error(f"[WORKER] HTTP {response.status_code} from {worker_url}. Skipping.")
+            return {}
+
+    except Exception as e:
+        logger.error(f"[WORKER] Could not reach {worker_url} — {str(e)}")
+        return {}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HEALTH CHECK HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+async def _get_available_workers() -> List[str]:
+    # BUG FIX 3: health check was hitting /health but worker exposes GET /
+    available = []
+    for url in WORKER_URLS:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get(f"{url}/")   # worker root = health check
+                if response.status_code == 200:
+                    available.append(url)
+        except Exception:
+            pass
+    return available
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DISTRIBUTE & BUILD
+# ─────────────────────────────────────────────────────────────────────────────
+async def _distribute_and_build(file_path: Path, cache_key: str) -> None:
+    try:
+        logger.info("=" * 60)
+        logger.info(f"[MANAGER] Starting distributed build for cache key: {cache_key}")
+
+        # STEP 1: Extract all chunks from the full PDF
+        logger.info("[MANAGER] STEP 1/7 — Extracting all text chunks...")
+        processor         = PDFProcessor(str(file_path))
+        original_chunks   = processor.process_pdf(use_ocr=False, use_sections=True)  # BUG FIX 4: renamed to original_chunks to avoid shadowing
+        total_chunks      = len(original_chunks)
+
+        # STEP 2: Discover available workers
+        available_workers = await _get_available_workers()
+        num_nodes         = len(available_workers)
+        logger.info(f"[MANAGER] Total chunks: {total_chunks} | Available workers: {num_nodes}")
+
+        # ── NO WORKERS: full local fallback ────────────────────────────────
+        if not available_workers:
+            logger.info("[MANAGER] WARNING: No workers available. Processing locally.")
+            result = await asyncio.get_event_loop().run_in_executor(
+                executor, _process_chunks_locally, original_chunks
+            )
+            master_vs = VectorStore(max_workers=4)
+            master_vs.build_from_distributed(
+                all_vectors=[result["vectors"]],
+                all_chunks=result["chunks"],
+                cache_source=cache_key,
+                summary=result["summary"],       # pass summary so it's persisted in save()
+            )
+            with _vs_lock:
+                vector_stores[cache_key] = master_vs
+            logger.info(f"[MANAGER] Local build COMPLETE for key: {cache_key}")
+            logger.info("=" * 60)
+            return
+
+        # STEP 3: Compute page ranges (not chunk ranges) to send to workers
+        reader      = PdfReader(str(file_path))
+        total_pages = len(reader.pages)
+        chunk_ranges  = _split_chunks(total_pages, num_nodes)   # page-level split for workers
+        logger.info("[MANAGER] STEP 2/7 — Page ranges per worker:")
+        for i, (s, e) in enumerate(chunk_ranges):
+            logger.info(f"  Worker-{i+1}: pages {s} → {e}")
+
+        # STEP 4: Launch worker tasks in parallel
+        logger.info("[MANAGER] STEP 3/7 — Launching all tasks in parallel...")
+        worker_tasks = [
+            _call_worker_process_chunks(
+                worker_url  = available_workers[i],
+                chunks      = [],           # workers extract their own chunks from the PDF
+                file_path   = file_path,
+                start_page  = s,
+                end_page    = e,
+            )
+            for i, (s, e) in enumerate(chunk_ranges)
+        ]
+        worker_results = await asyncio.gather(*worker_tasks)
+        logger.info("[MANAGER] All tasks finished. Starting merge...")
+
+        # STEP 5: Collect & validate — with per-worker fallback
+        # BUG FIX 5: renamed collector lists to avoid shadowing original_chunks
+        all_vectors:   List[np.ndarray] = []
+        all_flat_chunks: List[dict]     = []
+        all_summaries: List[str]        = []
+
+        loop = asyncio.get_event_loop()
+        for i, res in enumerate(worker_results):
+            worker_label  = f"Worker-{i+1} ({available_workers[i]})"
+            s, e          = chunk_ranges[i]
+
+            # Per-worker fallback: if worker failed, process its page range locally
+            if not res or "vectors" not in res:
+                logger.warning(f"[MANAGER] {worker_label} failed. Local fallback for pages {s}→{e}...")
+                # BUG FIX 6: use original_chunks filtered by page range instead of empty all_flat_chunks
+                # s and e are 0-based page indices from _split_chunks, but page_num is 1-based
+                # Worker processes range(s,e) = pages s+1..e, so filter is s < page_num <= e
+                fallback_chunks = [c for c in original_chunks if s < c.get("page_num", 0) <= e]
+                res = await loop.run_in_executor(
+                    executor, _process_chunks_locally, fallback_chunks
+                )
+
+            if "vectors" in res:
+                vecs = res["vectors"]
+                if isinstance(vecs, np.ndarray) and vecs.ndim == 2 and vecs.shape[0] > 0:
+                    all_vectors.append(vecs)
+                    all_flat_chunks.extend(res.get("chunks", []))
+                    all_summaries.append(res.get("summary", ""))
+                    logger.info(f"[MANAGER] {worker_label} accepted: {vecs.shape[0]} vectors")
+                else:
+                    logger.error(f"[MANAGER] {worker_label} returned invalid vector format")
+            else:
+                logger.error(f"[MANAGER] {worker_label} result missing vectors")
+
+        if not all_vectors:
+            logger.error("[MANAGER] No valid vectors collected. Build aborted.")
+            return
+
+        # STEP 6: Merge summaries — BUG FIX 7: use all_summaries list not chunk['summary']
+        # original code tried chunk['summary'] which doesn't exist on PDFProcessor output
+        logger.info("[MANAGER] STEP 5/7 — Combining summaries...")
+        full_summary = "\n\n".join(s for s in all_summaries if s and s.strip())
+        logger.info(f"[MANAGER] Combined summary length: {len(full_summary)} characters")
+
+        # STEP 7: Build FAISS index
+        logger.info("[MANAGER] STEP 6/7 — Building FAISS index...")
+        master_vs = VectorStore(max_workers=4)
+        master_vs.build_from_distributed(
+            all_vectors  = all_vectors,
+            all_chunks   = all_flat_chunks,
+            cache_source = cache_key,
+            summary      = full_summary,         # pass summary so it's persisted in save()
+        )
+
+        # STEP 8: Register in memory
+        logger.info("[MANAGER] STEP 7/7 — Registering store in memory...")
+        with _vs_lock:
+            vector_stores[cache_key] = master_vs
+
+        logger.info(
+            f"[MANAGER] Build COMPLETE. key={cache_key} | "
+            f"chunks={len(all_flat_chunks)} | summary={len(full_summary)} chars"
+        )
+        logger.info("=" * 60)
+
+    except Exception as e:
+        logger.error(f"[MANAGER] Distributed build crashed — {str(e)}", exc_info=True)
+    finally:
+        with _vs_lock:
+            vs_building.discard(cache_key)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL SUMMARIZATION FALLBACK
+# ─────────────────────────────────────────────────────────────────────────────
+async def _summarize_locally(file_path: Path) -> str:
+    logger.info("[MANAGER] Starting local summarization...")
+    processor  = PDFProcessor(str(file_path))
+    pages_data = processor.process_pdf(use_ocr=False, use_sections=True)
+
+    text_chunks = []
+    for page in pages_data:
+        if page["text"].strip():
+            text_chunks.extend(split_into_chunks(page["text"], max_words=200))
+
+    if not text_chunks:
+        return ""
+
+    summarizer = PDFSummarizer()
+    summary, _ = summarizer.summarize_text_with_ollama(
+        text_chunks=text_chunks,
+        model_name=summarizer.model_name,
+        temperature=0.1,
+        max_tokens=512
+    )
+    logger.info(f"[MANAGER] Local summarization complete. Length: {len(summary)} characters")
+    return summary
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STARTUP — preload cached indexes from disk
+# ─────────────────────────────────────────────────────────────────────────────
+@app.on_event("startup")
+def _preload_caches() -> None:
+    def _load_all():
+        logger.info("[STARTUP] Scanning cache directory...")
+        index_files = list(CACHE_DIR.glob("*.index"))
+        logger.info(f"[STARTUP] Found {len(index_files)} cached indexes in {CACHE_DIR}")
+        for index_file in index_files:
+            try:
+                cache_id = index_file.stem
+                vs       = VectorStore(max_workers=4)
+                if vs.load(cache_id):
+                    with _vs_lock:
+                        vector_stores[cache_id] = vs
+                    logger.info(f"[STARTUP] Loaded: {index_file.name} ({len(vs.documents)} chunks)")
+                else:
+                    logger.warning(f"[STARTUP] Failed to load {index_file.name}")
+            except Exception as e:
+                logger.warning(f"[STARTUP] Error loading {index_file.name} — {str(e)}")
+        logger.info(f"[STARTUP] Complete. {len(vector_stores)} stores ready.")
+
+    threading.Thread(target=_load_all, daemon=True).start()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTES
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/")
+async def root():
+    return {"status": "healthy", "nodes_loaded": len(vector_stores)}
+
+
+@app.post("/api/summarize")
+async def summarize(request: SummarizeRequest):
+    logger.info("=" * 60)
+    logger.info("[SUMMARIZE] New request received.")
+    try:
+        file_path  = _get_clean_path(request.filePath)
+        cache_key  = request.fileId if request.fileId else _cache_key(str(file_path))
+        logger.info(f"[SUMMARIZE] File: {file_path.name} | Cache key: {cache_key}")
+
+        summarizer     = PDFSummarizer()
+        summary_result = summarizer.summarize(str(file_path))
+        logger.info(f"[SUMMARIZE] Done. Length: {len(summary_result)} chars.")
+
+        with _vs_lock:
+            if cache_key not in vector_stores and cache_key not in vs_building:
+                vs_building.add(cache_key)
+                logger.info(f"[SUMMARIZE] Launching background vector build for: {cache_key}")
+                asyncio.create_task(_distribute_and_build(file_path, cache_key))
+            else:
+                logger.info(f"[SUMMARIZE] Store already exists/building for: {cache_key}")
 
         return {
-            "answer":  answer,
-            "sources": [
-                {"source": d["source"], "page": d["page"]}
-                for d in relevant_docs
-            ],
+            "status":   "success",
+            "summary":  summary_result,
+            "metadata": {"filename": file_path.name, "cache_key": cache_key},
         }
+    except Exception as e:
+        logger.error(f"[SUMMARIZE] ERROR: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ask")
+async def ask(request: QuestionRequest):
+    logger.info("=" * 60)
+    logger.info("[ASK] New question received.")
+    try:
+        if not request.question.strip():
+            raise HTTPException(status_code=400, detail="Empty question")
+
+        file_path = _get_clean_path(request.filePath)
+        cache_key = request.fileId if request.fileId else _cache_key(str(file_path))
+        logger.info(f"[ASK] File: {file_path.name} | Cache key: {cache_key}")
+        logger.info(f"[ASK] Question: {request.question}")
+
+        # Wait for build to finish (max 120s for large PDFs)
+        wait = 0
+        while cache_key in vs_building and wait < 120:
+            logger.info(f"[ASK] Store still building... ({wait}s)")
+            await asyncio.sleep(1)
+            wait += 1
+
+        if cache_key not in vector_stores:
+            logger.info("[ASK] Store not in memory. Trying disk...")
+            vs = VectorStore(max_workers=4)
+            if vs.load(cache_key):
+                with _vs_lock:
+                    vector_stores[cache_key] = vs
+                logger.info(f"[ASK] Loaded from disk: {cache_key}")
+            else:
+                # Check if a build is already running before starting a new one
+                # (avoids duplicate builds when the initial wait times out)
+                with _vs_lock:
+                    already_building = cache_key in vs_building
+                    if not already_building:
+                        vs_building.add(cache_key)
+
+                if already_building:
+                    logger.info("[ASK] Build still running after 120s. Waiting up to 180s more...")
+                    extra = 0
+                    while cache_key in vs_building and extra < 180:
+                        if cache_key in vector_stores:
+                            break
+                        await asyncio.sleep(1)
+                        extra += 1
+                else:
+                    logger.info("[ASK] Not on disk. Triggering distributed build...")
+                    await _distribute_and_build(file_path, cache_key)
+
+        if cache_key not in vector_stores:
+            logger.error(f"[ASK] Vector store could not be initialized for {cache_key}")
+            raise HTTPException(status_code=500, detail="Vector Store initialization failed")
+
+        logger.info("[ASK] Store ready. Running RAG pipeline...")
+        rag    = RAGPipeline(vector_store=vector_stores[cache_key])
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, rag.query, request.question)
+
+        logger.info(f"[ASK] Done. Sources: {len(result.get('sources', []))}")
+        return {
+            "status":  "success",
+            "answer":  result.get("answer", ""),
+            "sources": result.get("sources", []),
+        }
+    except Exception as e:
+        logger.error(f"[ASK] ERROR: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
