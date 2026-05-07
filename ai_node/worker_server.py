@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
 
 from pdf_processor import PDFProcessor
 from embeddings import EmbeddingGenerator
@@ -47,34 +49,38 @@ app.add_middleware(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STARTUP
+# STARTUP — initialize models once
 # ─────────────────────────────────────────────────────────────────────────────
 embedding_generator = EmbeddingGenerator(max_workers=4)
 summarizer_engine   = PDFSummarizer() if PDFSummarizer else None
 
 logger.info("=" * 60)
-logger.info("[STARTUP] Worker node is starting...")
-logger.info(f"[STARTUP] Embedding model loaded: {embedding_generator.model_name}")
-logger.info(f"[STARTUP] Summarization capability: {'ENABLED' if summarizer_engine else 'DISABLED'}")
-logger.info("[STARTUP] Worker is ready and listening for tasks.")
+logger.info("[STARTUP] Worker node starting...")
+logger.info(f"[STARTUP] Embedding model: {embedding_generator.model_name}")
+logger.info(f"[STARTUP] Summarization: {'ENABLED' if summarizer_engine else 'DISABLED'}")
+logger.info("[STARTUP] Worker ready.")
 logger.info("=" * 60)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEALTH CHECK
-# Manager calls this to verify the worker is alive before sending tasks
+# BUG FIX A: manager was calling GET /health — added /health alias so both
+# GET / and GET /health work. Manager's _get_available_workers() hits GET /
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/")
+@app.get("/health")
 def health_check():
-    logger.info("[HEALTH] Health check requested by manager.")
+    logger.info("[HEALTH] Health check received.")
     return {
         "status": "ready",
-        "capabilities": ["vectorization", "summarization" if summarizer_engine else "none", "combined"]
+        "capabilities": {
+            "vectorization": True,
+            "summarization": summarizer_engine is not None,
+        }
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SUMMARIZATION ENDPOINT
-# Receives PDF bytes + page range, extracts text, summarizes via Ollama,
-# and returns a partial summary string back to the manager
+# SUMMARIZATION ENDPOINT — /process_summary
+# Receives PDF bytes + page range, returns partial summary string
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process_summary")
 async def process_summary_fragment(
@@ -83,86 +89,67 @@ async def process_summary_fragment(
     endPage:   int        = Form(...)
 ):
     logger.info("=" * 60)
-    logger.info(f"[SUMMARIZE] New summarization task received.")
-    logger.info(f"[SUMMARIZE] File: {file.filename} | Assigned pages: {startPage} -> {endPage}")
+    logger.info(f"[SUMMARIZE] File: {file.filename} | Pages: {startPage} → {endPage}")
 
     if not summarizer_engine:
-        logger.error("[SUMMARIZE] ERROR: Summarizer engine is not installed on this worker.")
-        raise HTTPException(status_code=501, detail="Summarization module not installed on worker.")
+        raise HTTPException(status_code=501, detail="Summarization not available on this worker.")
 
     try:
-        logger.info("[SUMMARIZE] STEP 1/3 — Reading uploaded PDF bytes...")
         file_content = await file.read()
         pdf_stream   = io.BytesIO(file_content)
-        logger.info(f"[SUMMARIZE] PDF received. Size: {len(file_content)} bytes.")
 
-        logger.info("[SUMMARIZE] STEP 2/3 — Extracting text from assigned pages...")
         processor  = PDFProcessor(pdf_stream)
-        pages_data = processor.process_pdf(start_page=startPage, end_page=endPage)
+        pages_data = processor.process_pdf(
+            use_ocr=False, use_sections=True,
+            start_page=startPage, end_page=endPage
+        )
         logger.info(f"[SUMMARIZE] Extracted {len(pages_data)} pages.")
 
         text_chunks = []
         for page in pages_data:
             if page["text"].strip():
-                chunks = split_into_chunks(page["text"], max_words=200)
-                text_chunks.extend(chunks)
-
-        logger.info(f"[SUMMARIZE] Total text chunks to summarize: {len(text_chunks)}")
+                text_chunks.extend(split_into_chunks(page["text"], max_words=200))
 
         if not text_chunks:
-            logger.warning("[SUMMARIZE] WARNING: No text found in assigned page range. Returning empty summary.")
+            logger.warning("[SUMMARIZE] No text found. Returning empty summary.")
             return {"partial_summary": ""}
 
-        logger.info("[SUMMARIZE] STEP 3/3 — Sending chunks to Ollama for summarization...")
         partial_summary, _ = summarizer_engine.summarize_text_with_ollama(
             text_chunks=text_chunks,
             model_name=summarizer_engine.model_name,
             temperature=0.1,
             max_tokens=512
         )
-
-        logger.info(f"[SUMMARIZE] Task COMPLETE. Summary length: {len(partial_summary)} characters.")
+        logger.info(f"[SUMMARIZE] Done. Length: {len(partial_summary)} chars.")
         return {"partial_summary": partial_summary}
 
     except Exception as e:
-        logger.error(f"[SUMMARIZE] ERROR: Task failed — {str(e)}", exc_info=True)
+        logger.error(f"[SUMMARIZE] Failed — {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VECTORIZATION ENDPOINT
-# Receives PDF bytes + page range from the manager.
-# Pipeline:
-#   Step 1 — Read the uploaded PDF bytes into memory
-#   Step 2 — Extract and section text from the assigned page range
-#   Step 3 — Split sections into chunks (max 100 words each)
-#   Step 4 — Generate embeddings via local Ollama (parallel)
-#   Step 5 — Normalize vectors for cosine similarity
-# Returns: { "status", "vectors": list (2D), "chunks": list of dicts }
-# ─────────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# COMBINED PROCESSING ENDPOINT
-# Handles both vectorization and summarization
+# MAIN PROCESSING ENDPOINT — /process
+# Vectorizes + optionally summarizes assigned PDF page range.
+# BUG FIX B: old code returned no summary key from this endpoint — added it.
+# Manager's _call_worker_process_chunks reads result.get("summary", "")
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process")
 async def process_task(
     file:      UploadFile = File(...),
     startPage: int        = Form(...),
     endPage:   int        = Form(...),
-    task_type: str        = Form("vectorize")  # 'vectorize' or 'summarize'
+    task_type: str        = Form("vectorize")   # 'vectorize' | 'both'
 ):
     logger.info("=" * 60)
-    logger.info(f"[TASK] New {task_type} task received.")
-    logger.info(f"[TASK] File: {file.filename} | Pages: {startPage}->{endPage}")
+    logger.info(f"[TASK] task_type={task_type} | File: {file.filename} | Pages: {startPage}→{endPage}")
 
     try:
-        # Step 1: Read PDF bytes
-        logger.info("[VECTORIZE] STEP 1/5 — Reading uploaded PDF bytes...")
+        # ── STEP 1: Read PDF ────────────────────────────────────────────────
         file_content = await file.read()
         pdf_stream   = io.BytesIO(file_content)
-        logger.info(f"[VECTORIZE] PDF received. Size: {len(file_content)} bytes.")
+        logger.info(f"[TASK] PDF size: {len(file_content)} bytes")
 
-        # Step 2: Extract text from assigned pages
-        logger.info("[VECTORIZE] STEP 2/5 — Extracting text from assigned pages...")
+        # ── STEP 2: Extract text ─────────────────────────────────────────────
         processor  = PDFProcessor(pdf_stream)
         pages_data = processor.process_pdf(
             use_ocr=False,
@@ -170,53 +157,117 @@ async def process_task(
             start_page=startPage,
             end_page=endPage
         )
-        logger.info(f"[VECTORIZE] Extracted {len(pages_data)} sections from pages {startPage}-{endPage}.")
+        logger.info(f"[TASK] Extracted {len(pages_data)} sections.")
 
         if not pages_data:
-            logger.warning("[VECTORIZE] WARNING: No text found in assigned page range. Returning empty package.")
-            return {"chunks": [], "vectors": []}
+            logger.warning("[TASK] No text in assigned page range. Returning empty.")
+            return {"status": "empty", "vectors": [], "chunks": [], "summary": ""}
 
-        # Step 3: Split into chunks
-        logger.info("[VECTORIZE] STEP 3/5 — Splitting sections into chunks (max 100 words each)...")
+        # ── STEP 3: Split into chunks ─────────────────────────────────────────
         chunked_data = []
         for section in pages_data:
-            chunks = split_into_chunks(section["text"], max_words=100)
-            for chunk in chunks:
+            for chunk_text in split_into_chunks(section["text"], max_words=100):
                 chunked_data.append({
-                    "text":          chunk,
+                    "text":          chunk_text,
                     "filename":      section.get("filename", file.filename),
                     "page_num":      section.get("page_num", 0),
                     "section_title": section.get("section_title", ""),
                 })
-        logger.info(f"[VECTORIZE] Total chunks ready for embedding: {len(chunked_data)}")
+        logger.info(f"[TASK] Total chunks: {len(chunked_data)}")
 
-        # Step 4: Generate embeddings via local Ollama
-        logger.info("[VECTORIZE] STEP 4/5 — Sending chunks to Ollama for embedding (parallel)...")
+        # ── STEP 4: Embed ────────────────────────────────────────────────────
         texts      = [c["text"] for c in chunked_data]
         embeddings = embedding_generator.embed_documents(texts)
         emb_np     = np.array(embeddings).astype("float32")
-        logger.info(f"[VECTORIZE] Embeddings generated. Shape: {emb_np.shape} | dtype: {emb_np.dtype}")
+        logger.info(f"[TASK] Embeddings shape: {emb_np.shape}")
 
-        # Step 5: Normalize vectors
-        logger.info("[VECTORIZE] STEP 5/5 — Normalizing vectors before sending to manager...")
+        # ── STEP 5: Normalize ─────────────────────────────────────────────────
         norms             = np.linalg.norm(emb_np, axis=1, keepdims=True)
         norms[norms == 0] = 1
-        normalized_emb    = emb_np / norms
-        logger.info(f"[VECTORIZE] Normalization done. Final shape: {normalized_emb.shape}")
+        normalized        = emb_np / norms
+        logger.info(f"[TASK] Normalized shape: {normalized.shape}")
 
-        logger.info(f"[VECTORIZE] Task COMPLETE. Returning {len(chunked_data)} chunks + {normalized_emb.shape[0]} vectors to manager.")
+        # ── STEP 6: Summarize (optional) ─────────────────────────────────────
+        # BUG FIX B: was never generating summary here — manager expected it
+        summary = ""
+        if summarizer_engine and task_type in ("both", "summarize"):
+            logger.info("[TASK] Generating summary...")
+            try:
+                summary, _ = summarizer_engine.summarize_text_with_ollama(
+                    text_chunks=texts,
+                    model_name=summarizer_engine.model_name,
+                    temperature=0.1,
+                    max_tokens=512
+                )
+                logger.info(f"[TASK] Summary length: {len(summary)} chars")
+            except Exception as e:
+                logger.error(f"[TASK] Summary failed — {str(e)}")
+
+        logger.info(f"[TASK] DONE. {len(chunked_data)} chunks | {normalized.shape[0]} vectors | {len(summary)} summary chars")
         return {
-            "status":  "success",
-            "vectors": normalized_emb.tolist(),
-            "chunks":  chunked_data,
+            "status":       "success",
+            "vectors":      normalized.tolist(),
+            "chunks":       chunked_data,
+            "summary":      summary,
+            "vector_count": normalized.shape[0],
         }
 
     except Exception as e:
-        logger.error(f"[VECTORIZE] ERROR: Task failed — {str(e)}", exc_info=True)
+        logger.error(f"[TASK] Failed — {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON CHUNKS ENDPOINT — /process_chunks
+# BUG FIX C: manager's old code sent JSON chunks but worker had no such endpoint.
+# Added this so older manager versions still work if needed.
+# Accepts {chunks: [...]} JSON body, embeds + returns vectors.
+# ─────────────────────────────────────────────────────────────────────────────
+class ChunksRequest(BaseModel):
+    chunks: List[dict]
+
+@app.post("/process_chunks")
+async def process_chunks_json(req: ChunksRequest):
+    logger.info("=" * 60)
+    logger.info(f"[CHUNKS] Received {len(req.chunks)} chunks via JSON")
+
+    if not req.chunks:
+        return {"vectors": [], "chunks": [], "summary": ""}
+
+    try:
+        texts  = [c["text"] for c in req.chunks]
+        embs   = embedding_generator.embed_documents(texts)
+        emb_np = np.array(embs).astype("float32")
+
+        norms             = np.linalg.norm(emb_np, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        normalized        = emb_np / norms
+
+        summary = ""
+        if summarizer_engine:
+            try:
+                summary, _ = summarizer_engine.summarize_text_with_ollama(
+                    text_chunks=texts,
+                    model_name=summarizer_engine.model_name,
+                    temperature=0.1,
+                    max_tokens=512
+                )
+            except Exception as e:
+                logger.error(f"[CHUNKS] Summary failed — {str(e)}")
+
+        logger.info(f"[CHUNKS] Done. {normalized.shape[0]} vectors | {len(summary)} summary chars")
+        return {
+            "status":       "success",
+            "vectors":      normalized.tolist(),
+            "chunks":       req.chunks,
+            "summary":      summary,
+            "vector_count": normalized.shape[0],
+        }
+
+    except Exception as e:
+        logger.error(f"[CHUNKS] Failed — {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
     import uvicorn
-    # 0.0.0.0 allows the manager machine to reach this worker over the network
     uvicorn.run(app, host="0.0.0.0", port=8001)

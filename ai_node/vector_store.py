@@ -10,15 +10,12 @@ logger = logging.getLogger("VECTOR_STORE")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CACHE DIRECTORY
-# All FAISS indexes and metadata files are stored here on disk
 # ─────────────────────────────────────────────────────────────────────────────
 CACHE_DIR = Path(__file__).parent / "vs_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
 def _cache_key(source: str) -> str:
-    # If source is a MongoDB ObjectId (24 hex chars) use it directly
-    # Otherwise generate an MD5 hash from the source string
     if len(source) == 24 and all(c in "0123456789abcdefABCDEF" for c in source):
         return source
     return hashlib.md5(str(source).encode()).hexdigest()
@@ -27,9 +24,10 @@ def _cache_key(source: str) -> str:
 class VectorStore:
     def __init__(self, max_workers: int = 4):
         self.embedding_generator = EmbeddingGenerator(max_workers=max_workers)
-        self.index     = None   # FAISS index — used for fast similarity search
-        self.documents = []     # List of dicts: text + source + page + section_title
-        self.vectors   = None   # Normalized vectors — used for MMR and keyword boost
+        self.index     = None   # FAISS index
+        self.documents = []     # list of {text, source, page, section_title}
+        self.vectors   = None   # normalized vectors — for MMR & keyword boost
+        self.summary   = ""     # combined summary text — set by manager after distributed build
 
     # ─────────────────────────────────────────
     # PERSISTENCE
@@ -44,21 +42,22 @@ class VectorStore:
         index_path = CACHE_DIR / f"{key}.index"
         meta_path  = CACHE_DIR / f"{key}.meta"
 
-        logger.info(f"[SAVE] Saving FAISS index to {index_path.name}...")
+        logger.info(f"[SAVE] Saving FAISS index → {index_path.name}")
         faiss.write_index(self.index, str(index_path))
 
-        logger.info(f"[SAVE] Saving metadata (documents + vectors) to {meta_path.name}...")
+        logger.info(f"[SAVE] Saving metadata → {meta_path.name}")
         with open(meta_path, "wb") as f:
             pickle.dump(
                 {
                     "documents":     self.documents,
-                    "vectors":       self.vectors,   # normalized — needed for MMR on reload
+                    "vectors":       self.vectors,
+                    "summary":       self.summary,
                     "original_path": cache_source,
                 },
                 f,
                 protocol=pickle.HIGHEST_PROTOCOL,
             )
-        logger.info(f"[SAVE] Done. {len(self.documents)} chunks saved to disk.")
+        logger.info(f"[SAVE] Done. {len(self.documents)} chunks on disk.")
 
     def load(self, cache_source: str) -> bool:
         key        = _cache_key(cache_source)
@@ -66,7 +65,7 @@ class VectorStore:
         meta_path  = CACHE_DIR / f"{key}.meta"
 
         if not index_path.exists() or not meta_path.exists():
-            logger.info(f"[LOAD] No cache found for key: {key}")
+            logger.info(f"[LOAD] No cache for key: {key}")
             return False
 
         try:
@@ -79,27 +78,28 @@ class VectorStore:
 
             self.documents = meta.get("documents", [])
             self.vectors   = meta.get("vectors")
+            self.summary   = meta.get("summary", "")
 
-            logger.info(f"[LOAD] Load complete. {len(self.documents)} chunks | vectors shape: {self.vectors.shape if self.vectors is not None else 'None'}")
+            logger.info(
+                f"[LOAD] Complete. {len(self.documents)} chunks | "
+                f"vectors: {self.vectors.shape if self.vectors is not None else 'None'}"
+            )
             return True
 
         except Exception as e:
-            logger.error(f"[LOAD] ERROR: Failed to load cache — {str(e)}")
+            logger.error(f"[LOAD] Failed — {str(e)}")
             return False
 
     # ─────────────────────────────────────────
-    # BUILD — Standard (no distribution)
-    # Used when no remote workers are available
-    # Embeds locally, normalizes, and builds the index in one shot
+    # BUILD — Standard (local, no distribution)
     # ─────────────────────────────────────────
 
     def create_vector_store(self, pages_data: list, cache_source: str = None) -> None:
         valid_pages = [p for p in pages_data if p.get("text") and p["text"].strip()]
         if not valid_pages:
-            logger.warning("[BUILD] No text found to index.")
+            logger.warning("[BUILD] No text to index.")
             return
 
-        logger.info(f"[BUILD] Generating embeddings for {len(valid_pages)} chunks...")
         texts      = [p["text"] for p in valid_pages]
         embeddings = self.embedding_generator.embed_documents(texts)
         emb_np     = np.array(embeddings).astype("float32")
@@ -109,37 +109,30 @@ class VectorStore:
         norms[norms == 0] = 1
         normalized        = emb_np / norms
 
-        self._finalize_index(normalized, emb_np, valid_pages)
+        self._finalize_index(normalized, valid_pages)
         logger.info(f"[BUILD] Index built with {len(valid_pages)} chunks.")
 
         if cache_source:
             self.save(cache_source)
 
     # ─────────────────────────────────────────
-    # BUILD — Distributed (called by manager after collecting all worker packages)
-    # Steps:
-    #   1. Stack all normalized vectors into one matrix (single vstack)
-    #   2. Unify metadata keys to: source + page
-    #   3. Build FAISS index once from the full matrix
-    #   4. Save to disk
+    # BUILD — Distributed
     # ─────────────────────────────────────────
 
     def build_from_distributed(
         self,
-        all_vectors:  list,   # list of np.ndarray — one per node (already normalized)
-        all_chunks:   list,   # flat list of dicts: {text, filename, page_num, section_title}
+        all_vectors:  list,
+        all_chunks:   list,
         cache_source: str = None
     ) -> None:
         if not all_vectors:
-            logger.warning("[DISTRIBUTED] No vectors received. Build aborted.")
+            logger.warning("[DISTRIBUTED] No vectors received. Aborted.")
             return
 
-        logger.info(f"[DISTRIBUTED] Stacking {len(all_vectors)} vector batches into one matrix...")
+        logger.info(f"[DISTRIBUTED] Stacking {len(all_vectors)} vector batches...")
         final_vectors = np.vstack(all_vectors).astype("float32")
-        logger.info(f"[DISTRIBUTED] Final matrix shape: {final_vectors.shape} | dtype: {final_vectors.dtype}")
+        logger.info(f"[DISTRIBUTED] Matrix shape: {final_vectors.shape}")
 
-        # Unify metadata — all docs must have: source, page, text, section_title
-        logger.info(f"[DISTRIBUTED] Unifying metadata keys (filename->source, page_num->page)...")
         unified_docs = [
             {
                 "text":          c.get("text", ""),
@@ -149,13 +142,10 @@ class VectorStore:
             }
             for c in all_chunks
         ]
-        logger.info(f"[DISTRIBUTED] Unified {len(unified_docs)} documents.")
 
-        # Build FAISS index once from the full stacked matrix
-        logger.info(f"[DISTRIBUTED] Building FAISS IndexFlatL2 with dim={final_vectors.shape[1]}...")
         dimension  = final_vectors.shape[1]
-        self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(final_vectors)
+        self.index = faiss.IndexFlatIP(dimension)   # BUG FIX 8: use IndexFlatIP (inner product = cosine on normalized vectors)
+        self.index.add(final_vectors)               # vectors are already normalized → IP == cosine sim
 
         self.vectors   = final_vectors
         self.documents = unified_docs
@@ -166,22 +156,21 @@ class VectorStore:
             self.save(cache_source)
 
     # ─────────────────────────────────────────
-    # INTERNAL HELPER
-    # Adds embeddings and metadata to the index incrementally
-    # Used by create_vector_store (standard mode)
+    # INTERNAL HELPER — Standard build only
+    # BUG FIX 9: removed raw_emb param — FAISS now always gets normalized vectors
+    # so L2 search is consistent with cosine MMR/keyword-boost search
     # ─────────────────────────────────────────
 
     def _finalize_index(
         self,
         normalized_emb: np.ndarray,
-        raw_emb:        np.ndarray,
         pages_metadata: list
     ) -> None:
-        dimension = raw_emb.shape[1]
+        dimension = normalized_emb.shape[1]
 
         if self.index is None:
-            self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(raw_emb)
+            self.index = faiss.IndexFlatIP(dimension)   # inner product on normalized = cosine
+        self.index.add(normalized_emb)
 
         if self.vectors is None:
             self.vectors = normalized_emb
@@ -200,15 +189,17 @@ class VectorStore:
         self.documents.extend(new_docs)
 
     # ─────────────────────────────────────────
-    # SEARCH — Basic L2 similarity search
+    # SEARCH — Basic cosine search (was L2, now IP on normalized vectors)
     # ─────────────────────────────────────────
 
     def search(self, query: str, k: int = 4) -> list:
         if self.index is None:
             return []
-        query_vec = np.array(
-            [self.embedding_generator.embed_query(query)]
-        ).astype("float32")
+        query_vec  = np.array([self.embedding_generator.embed_query(query)]).astype("float32")
+        # normalize query before IP search
+        q_norm     = np.linalg.norm(query_vec)
+        query_vec /= q_norm if q_norm > 0 else 1.0
+
         _, indices = self.index.search(query_vec, k)
         results = [
             self.documents[i]
@@ -219,8 +210,7 @@ class VectorStore:
         return results
 
     # ─────────────────────────────────────────
-    # SEARCH — Keyword boost (cosine + keyword bonus)
-    # Boosts chunks that contain the query keywords
+    # SEARCH — Keyword boost
     # ─────────────────────────────────────────
 
     def search_with_keyword_boost(
@@ -233,9 +223,7 @@ class VectorStore:
         if self.index is None or self.vectors is None:
             return []
 
-        query_vec = np.array(
-            [self.embedding_generator.embed_query(query)]
-        ).astype("float32")
+        query_vec      = np.array([self.embedding_generator.embed_query(query)]).astype("float32")
         q_norm         = np.linalg.norm(query_vec)
         query_vec_norm = query_vec / q_norm if q_norm > 0 else query_vec
 
@@ -243,11 +231,10 @@ class VectorStore:
 
         scored = []
         for idx, doc in enumerate(self.documents):
-            text_lower = doc["text"].lower()
             boost = sum(
                 keyword_bonus
                 for kw in keywords
-                if kw.lower() in text_lower
+                if kw.lower() in doc["text"].lower()
             )
             scored.append((idx, float(all_sims[idx]) + boost))
 
@@ -257,9 +244,7 @@ class VectorStore:
         return top
 
     # ─────────────────────────────────────────
-    # SEARCH — MMR (Maximal Marginal Relevance)
-    # Balances relevance and diversity in results
-    # lambda_mult: 1.0 = pure relevance, 0.0 = pure diversity
+    # SEARCH — MMR
     # ─────────────────────────────────────────
 
     def search_mmr(
@@ -272,14 +257,12 @@ class VectorStore:
         if self.index is None or self.vectors is None:
             return []
 
-        query_vec = np.array(
-            [self.embedding_generator.embed_query(query)]
-        ).astype("float32")
+        query_vec      = np.array([self.embedding_generator.embed_query(query)]).astype("float32")
         q_norm         = np.linalg.norm(query_vec)
         query_vec_norm = query_vec / q_norm if q_norm > 0 else query_vec
 
-        fetch_k = min(fetch_k, len(self.documents))
-        _, raw_indices = self.index.search(query_vec, fetch_k)
+        fetch_k       = min(fetch_k, len(self.documents))
+        _, raw_indices = self.index.search(query_vec_norm, fetch_k)
         candidate_indices = [
             i for i in raw_indices[0]
             if i != -1 and i < len(self.documents)
@@ -305,15 +288,12 @@ class VectorStore:
 
                 if selected_doc_indices:
                     sel_vecs            = self.vectors[selected_doc_indices]
-                    max_sim_to_selected = float(
-                        np.max(sel_vecs @ self.vectors[doc_idx])
-                    )
-                    diversity = 1.0 - max_sim_to_selected
+                    max_sim_to_selected = float(np.max(sel_vecs @ self.vectors[doc_idx]))
+                    diversity           = 1.0 - max_sim_to_selected
                 else:
                     diversity = 1.0
 
                 score = lambda_mult * relevance + (1.0 - lambda_mult) * diversity
-
                 if score > best_score:
                     best_score = score
                     best_pos   = pos
