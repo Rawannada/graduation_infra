@@ -1,56 +1,54 @@
-# =============================
-# CSV Insight AI - Backend Integrated Version
-# Works with your Node.js uploadCSVFile
-# =============================
-
 import os
 import re
 import json
-import time
 import logging
 import warnings
+import base64
 import pandas as pd
 import numpy as np
-from flask import Flask, jsonify, render_template, request
-from werkzeug.utils import secure_filename
-import plotly.express as px
-import plotly.utils
-import base64
+from flask import Flask, jsonify, request
 import requests
-import logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+import plotly.express as px
+import plotly.io as pio
+
+# =============================
+# 1. إعدادات السيرفر والـ Logging
+# =============================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-try:
-    from AutoClean import AutoClean
-    AUTOCLEAN_AVAILABLE = True
-except ImportError:
-    AUTOCLEAN_AVAILABLE = False
-
 warnings.filterwarnings("ignore")
 
-app = Flask(__name__, template_folder="templates")
-app.secret_key = "csv-insight-ai-v2"
+app = Flask(__name__)
+app.secret_key = "csv-insight-ai-local-final-v2"
 
-# Use WSL path for cross-platform access
-WSL_BASE_PATH = r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node"
-UPLOAD_FOLDER = os.path.join(WSL_BASE_PATH, "uploads")
+# تأكد من أن هذا المسار يطابق المجلد في جهازك
+UPLOAD_FOLDER = r"E:\graduationn-main\graduationn-main\uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-logger.info(f"Upload folder set to: {UPLOAD_FOLDER}")
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3"
 MAX_SUGGESTIONS = 6
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# =============================
+# 2. الأدوات التقنية (المحرك الاحترافي)
+# =============================
 
-# =============================
-# Utils
-# =============================
+def fix_bdata(obj):
+    """
+    تحويل أي بيانات NumPy أو Binary ناتجة من Plotly إلى قوائم عادية (Lists)
+    لضمان عدم حدوث خطأ أثناء تحويل الـ Response إلى JSON في الـ Node.js
+    """
+    if isinstance(obj, dict):
+        if "bdata" in obj and "dtype" in obj:
+            try:
+                dtype = np.dtype(obj["dtype"])
+                arr = np.frombuffer(base64.b64decode(obj["bdata"]), dtype=dtype)
+                return arr.tolist()
+            except: return obj
+        return {k: fix_bdata(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [fix_bdata(i) for i in obj]
+    return obj
 
 def detect_column_type(series):
     if pd.api.types.is_datetime64_any_dtype(series): return "date"
@@ -58,30 +56,22 @@ def detect_column_type(series):
     return "text"
 
 def load_cleaned_df(file_id):
-    """Load autoclean CSV using file_id from Node.js backend"""
-    # جرب ملف CSV أولاً
     file_name = f"{file_id}_autoclean.csv"
-    cleaned_path = os.path.join(UPLOAD_FOLDER, file_name)
-    
-    if os.path.exists(cleaned_path):
-        return pd.read_csv(cleaned_path)
-    
-    # Fallback: جرب ملف Parquet القديم لو مش موجود
-    parquet_path = os.path.join(UPLOAD_FOLDER, f"{file_id}_autoclean.parquet")
-    if os.path.exists(parquet_path):
-        return pd.read_parquet(parquet_path)
-    
+    path = os.path.join(UPLOAD_FOLDER, file_name)
+    if os.path.exists(path):
+        return pd.read_csv(path)
     return None
 
 # =============================
-# AI Charts (same as before)
+# 3. منطق الذكاء الاصطناعي (Ollama)
 # =============================
 
 def ask_ai(prompt):
     try:
-        r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}, timeout=30)
+        r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}, timeout=35)
         return r.json().get("response", "")
-    except:
+    except Exception as e:
+        logger.error(f"Ollama Connection Error: {e}")
         return ""
 
 def ai_suggest_charts(df):
@@ -89,242 +79,167 @@ def ai_suggest_charts(df):
     for col in df.columns:
         dtype = detect_column_type(df[col])
         profile = {"type": dtype}
-    
-    prompt = f"""You are data analyst. Profile: {json.dumps(col_profiles)}
-Suggest {MAX_SUGGESTIONS} charts JSON only..."""
+        if dtype == "numeric":
+            profile.update({"min": float(df[col].min()), "max": float(df[col].max())})
+        else:
+            profile["unique_count"] = int(df[col].nunique())
+        col_profiles[col] = profile
+
+    prompt = f"""You are a data analyst expert. Data Profile: {json.dumps(col_profiles)}
+    Suggest exactly {MAX_SUGGESTIONS} chart configurations. 
+    Return ONLY a JSON array. No text before or after.
+    JSON Format: [{{"type": "bar|line|scatter|pie|histogram", "x": "col1", "y": "col2", "title": "title"}}]
+    Rules:
+    - If type is bar/pie and column has many unique values, the renderer will handle Top 15.
+    - If y is unique_count, it means count of x categories.
+    """
     
     raw = ask_ai(prompt)
-    return []  
-
-def fig_to_json(fig):
-    import plotly.io as pio
-    raw = json.loads(pio.to_json(fig))
-    # fix bdata logic
-    return raw
-
-def build_chart(df, chart):
-    # نفس الكود القديم للـ charts (bar, line, etc.)
-    return fig_to_json(fig)  # placeholder
-
-# =============================
-# 🚀 MAIN ROUTES - Updated
-# =============================
-
-@app.route("/")
-def index():
-    return render_template("index.html")  # نفس HTML بتاعك
-
-@app.route("/test_path")
-def test_path():
-    return {
-        "BASE_DIR": BASE_DIR,
-        "UPLOAD_FOLDER": UPLOAD_FOLDER,
-        "exists": os.path.exists(UPLOAD_FOLDER),
-        "listdir": os.listdir(UPLOAD_FOLDER) if os.path.exists(UPLOAD_FOLDER) else []
-    }
-
-@app.route("/api_status")
-def api_status():
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=3)
-        return jsonify({"ok": r.status_code == 200, "model": OLLAMA_MODEL})
-    except:
-        return jsonify({"ok": False})
+        match = re.search(r'\[.*\]', raw, re.DOTALL)
+        if match:
+            suggestions = json.loads(match.group())
+            for s in suggestions:
+                if s.get("type") == "hist": s["type"] = "histogram"
+                if not s.get("title"): s["title"] = f"Distribution of {s.get('x')}"
+            return suggestions
+    except Exception as e:
+        logger.error(f"JSON Parsing Error: {e}")
+    return []
+
+# =============================
+# 4. محرك بناء الرسومات (الرسم الفعلي المعدل)
+# =============================
+
+def build_chart(df, chart_spec):
+    try:
+        ctype = chart_spec.get("type") or chart_spec.get("chartType")
+        x = chart_spec.get("x")
+        y = chart_spec.get("y")
+        
+        if isinstance(x, dict): x = x.get("column")
+        if isinstance(y, dict): y = y.get("column")
+        
+        title = chart_spec.get("title", "Data Visualization")
+        fig = None
+
+        if not x or x not in df.columns: return None
+
+        # نسخة مؤقتة للمعالجة الرقمية لتجنب خطأ nlargest مع الـ object dtype
+        temp_df = df.copy()
+
+        # --- رسم الـ Bar Chart ---
+        if ctype == "bar":
+            if y == "unique_count" or not y or y not in df.columns:
+                plot_df = temp_df[x].value_counts().nlargest(15).reset_index()
+                plot_df.columns = [x, 'count']
+                fig = px.bar(plot_df, x=x, y='count', title=title)
+            else:
+                # تحويل العمود لرقمي قبل الحساب لضمان عدم حدوث Error
+                temp_df[y] = pd.to_numeric(temp_df[y], errors='coerce')
+                plot_df = temp_df.groupby(x)[y].sum().nlargest(15).reset_index()
+                fig = px.bar(plot_df, x=x, y=y, title=title)
+
+        # --- رسم الـ Scatter ---
+        elif ctype == "scatter":
+            if y and y in df.columns:
+                temp_df[y] = pd.to_numeric(temp_df[y], errors='coerce')
+                fig = px.scatter(temp_df.head(500), x=x, y=y, title=title)
+
+        # --- رسم الـ Pie ---
+        elif ctype == "pie":
+            plot_df = temp_df[x].value_counts().nlargest(10).reset_index()
+            fig = px.pie(plot_df, names=x, values=plot_df.columns[1], title=title)
+
+        # --- رسم الـ Histogram ---
+        elif ctype in ["histogram", "hist"]:
+            fig = px.histogram(temp_df, x=x, title=title)
+
+        # --- رسم الـ Line Chart ---
+        elif ctype == "line":
+            if y and y in df.columns:
+                temp_df[y] = pd.to_numeric(temp_df[y], errors='coerce')
+                plot_df = temp_df.sort_values(x).head(100)
+                fig = px.line(plot_df, x=x, y=y, title=title)
+
+        if fig:
+            return fix_bdata(json.loads(pio.to_json(fig)))
+        return None
+    except Exception as e:
+        logger.error(f"Plotly Rendering Error: {e}")
+        return None
+
+# =============================
+# 5. الـ API Routes
+# =============================
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    """🎯 Receives Node.js backend JSON → AutoClean → Ready for analysis"""
-    print("🚀 DEBUG: Request received at /upload", flush=True)
     try:
-        # Capture raw JSON for debugging
-        raw_json = request.get_data(as_text=True)
-        logger.info(f"Raw JSON received: {raw_json}")
-        
-        backend_data = request.get_json()
-        logger.info(f"Parsed JSON: {backend_data}")
-        
-        if not backend_data or "CSV" not in backend_data:
-            return jsonify({"error": "No CSV data found in request"}), 400
-            
-    except Exception as e:
-        logger.error(f"JSON parsing error: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Invalid JSON: {str(e)}"}), 400
-
-    csv_info = backend_data["CSV"]
-    file_id = csv_info["_id"]
-    
-    linux_path = csv_info["path"]  # مثال: /home/rawannada/graduation_infra/backend-node/uploads/file.csv
-    
-    base_linux_dir = "/home/rawannada/graduation_infra/backend-node"
-    if linux_path.startswith(base_linux_dir):
-        relative_path = linux_path[len(base_linux_dir):].lstrip("/")
-    else:
-        relative_path = linux_path
-    
-    windows_relative = relative_path.replace("/", "\\")
-    
-    file_path = os.path.join(WSL_BASE_PATH, windows_relative)
-    
-    file_path = file_path.replace("\\\\wsl.localhost\\", "\\\\wsl$\\")
-    
-    logger.info(f"Resolved file path: {file_path}")
-    
-    if not os.path.exists(file_path):
-        logger.warning(f"File not found at primary path, trying sub-folder fallback...")
-        user_id = csv_info.get("userId")
+        data = request.get_json()
+        csv_info = data.get("CSV", {})
+        file_id = csv_info.get("_id")
         filename = csv_info.get("fileName")
         
-        file_path = os.path.join(UPLOAD_FOLDER, user_id, filename)
-        logger.info(f"Trying correct fallback path: {file_path}")
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        if not os.path.exists(file_path):
+            user_id = csv_info.get("userId", "")
+            file_path = os.path.join(UPLOAD_FOLDER, str(user_id), filename)
 
-    if not os.path.exists(file_path):
-        logger.error(f"❌ File not found at: {file_path}")
-        return jsonify({"error": f"File not found at {file_path}"}), 404
-    
-    # Simple file access test
-    try:
-        logger.info(f"📁 Testing file access: {file_path}")
-        with open(file_path, 'rb') as f:
-            f.read(100)  # Read first 100 bytes to test access
-        logger.info(f"✅ File access successful!")
-    except Exception as e:
-        logger.error(f"❌ File access failed: {str(e)}")
-        return jsonify({"error": f"File access failed: {str(e)}"}), 500
+        if not os.path.exists(file_path):
+            return jsonify({"error": "File not found at path"}), 404
 
-    # We're not using AutoClean anymore, so skip this check
-
-    # 2. Manual Cleaning with detailed error reporting
-    raw_shape = None
-    clean_shape = None
-    cleaned_path = None
-    autoclean_status = "failed"
-    
-    try:
-        logger.info(f"🔄 Starting safe cleaning for file_id: {file_id}")
-        
-        # Read file directly with pandas
-        logger.info(f"Reading file with pandas: {file_path}")
-        #df = pd.read_csv(file_path, engine='python')
-        logger.info(f"Reading file with pandas: {file_path}")
-        
         try:
-            df = pd.read_csv(file_path, sep=None, engine='python', encoding='utf-8-sig', on_bad_lines='skip')
-        except Exception as e:
-            logger.warning(f"First read attempt failed: {e}, trying cp1252...")
-            df = pd.read_csv(file_path, sep=None, engine='python', encoding='cp1252', on_bad_lines='skip')
+            df = pd.read_csv(file_path, sep=None, engine='python', encoding='utf-8-sig')
+        except:
+            df = pd.read_csv(file_path, sep=None, engine='python', encoding='cp1252')
 
-        logger.info(f"✅ Success! Data loaded. Shape: {df.shape}")
+        df_clean = df.drop_duplicates().fillna("N/A")
+        cleaned_path = os.path.join(UPLOAD_FOLDER, f"{file_id}_autoclean.csv")
+        df_clean.to_csv(cleaned_path, index=False)
         
-        
-        
-        # Log critical DataFrame info
-        logger.info(f"✅ File read successfully. Shape: {df.shape}")
-        logger.info(f"Columns: {list(df.columns)}")
-        logger.info(f"First row: {df.iloc[0].to_dict() if len(df) > 0 else 'Empty DataFrame'}")
-        
-        raw_shape = df.shape
-        
-        try:
-            df_clean = df.copy()
-            
-            # 1. Remove duplicate rows
-            logger.info("Removing duplicate rows...")
-            df_clean = df_clean.drop_duplicates()
-            logger.info(f"✅ Removed {len(df) - len(df_clean)} duplicates")
-            
-            # 2. Fill empty values
-            logger.info("Filling NA values...")
-            df_clean = df_clean.fillna("N/A")
-            logger.info(f"✅ Filled NA values")
-        except Exception as cleaning_error:
-            logger.error(f"❌ CRITICAL CLEANING ERROR: {str(cleaning_error)}", exc_info=True)
-            logger.error(f"DataFrame shape during error: {df.shape}")
-            logger.error(f"DataFrame columns during error: {list(df.columns)}")
-            # Use original df as fallback
-            df_clean = df
-            logger.warning("⚠️ Using original DataFrame as fallback")
-        
-        clean_shape = df_clean.shape
-        logger.info(f"✅ Cleaning completed: {raw_shape} → {clean_shape}")
-        
-        # Save as CSV
-        cleaned_file_name = f"{file_id}_autoclean.csv"
-        cleaned_path = os.path.join(UPLOAD_FOLDER, cleaned_file_name)
-        
-        try:
-            logger.info(f"Saving cleaned data to: {cleaned_path}")
-            df_clean.to_csv(cleaned_path, index=False)
-            logger.info(f"✅ Saved cleaned data successfully")
-            autoclean_status = "success"
-        except Exception as e:
-            logger.error(f"❌ SAVE ERROR: {str(e)}")
-            logger.error(f"DataFrame shape during save error: {df_clean.shape}")
-            logger.error(f"DataFrame columns during save error: {list(df_clean.columns)}")
-            cleaned_path = None
-            autoclean_status = "partial"
-    except Exception as big_error:
-        logger.error(f"❌ Big Error in cleaning: {str(big_error)}")
-        autoclean_status = "failed"
-
-    # 3. Response نهائي
-    # 3. Response نهائي مع التعامل مع حالات الفشل
-    autoclean_response = {
-        "status": autoclean_status,
-        "file_id": file_id,
-        "ready_for_charts": autoclean_status == "success"
-    }
-    
-    if autoclean_status == "success":
-        autoclean_response.update({
-            "raw_shape": [int(raw_shape[0]), int(raw_shape[1])] if raw_shape else None,
-            "clean_shape": [int(clean_shape[0]), int(clean_shape[1])] if clean_shape else None,
-            "rows_removed": int(raw_shape[0] - clean_shape[0]) if raw_shape and clean_shape else 0,
-            "cleaned_path": cleaned_path
+        return jsonify({
+            **data,
+            "autoclean": {
+                "status": "success",
+                "file_id": file_id,
+                "shape": list(df_clean.shape)
+            }
         })
-    
-    return jsonify({
-        **backend_data,
-        "autoclean": autoclean_response
-    })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/suggest", methods=["POST"])
 def suggest():
-    """AI chart suggestions using cleaned data"""
     data = request.json
-    file_id = data.get("file_id") or data.get("uid")
-    
+    file_id = data.get("file_id")
     df = load_cleaned_df(file_id)
-    if df is None:
-        return jsonify({"error": "Cleaned data not found"}), 404
+    if df is None: return jsonify({"error": "Data not found"}), 404
     
     suggestions = ai_suggest_charts(df)
-    return jsonify({
-        "suggestions": suggestions,
-        "file_id": file_id,
-        "source": "ai" if suggestions else "fallback"
-    })
+    return jsonify({"suggestions": suggestions, "file_id": file_id})
 
 @app.route("/render", methods=["POST"])
 def render_charts():
-    """Render Plotly charts"""
     data = request.json
-    file_id = data.get("file_id") or data.get("uid")
-    charts = data.get("charts", [])
+    file_id = data.get("file_id")
+    charts_to_render = data.get("charts", [])
     
     df = load_cleaned_df(file_id)
-    if df is None:
-        return jsonify({"error": "No cleaned data"}), 404
+    if df is None: return jsonify({"error": "Cleaned data not found"}), 404
     
     results = []
-    for chart in charts:
+    for chart in charts_to_render:
         fig_json = build_chart(df, chart)
-        results.append({
-            "success": fig_json is not None,
-            "fig": fig_json,
-            "title": chart.get("title", "")
-        })
-    
+        if fig_json:
+            results.append({
+                "success": True, 
+                "fig": fig_json, 
+                "title": chart.get("title", "Chart")
+            })
+            
     return jsonify({"charts": results, "file_id": file_id})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    logger.info("Python AI Service is running on http://127.0.0.1:5001")
+    app.run(host="127.0.0.1", port=5001, debug=True)

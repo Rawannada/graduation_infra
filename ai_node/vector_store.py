@@ -16,7 +16,8 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 
 def _cache_key(source: str) -> str:
-    if len(source) == 24 and all(c in "0123456789abcdefABCDEF" for c in source):
+    # Already a hex hash? Return as-is (24=ObjectId, 32=MD5, 40=SHA1, 64=SHA256)
+    if len(source) in (24, 32, 40, 64) and all(c in "0123456789abcdefABCDEF" for c in source):
         return source
     return hashlib.md5(str(source).encode()).hexdigest()
 
@@ -123,7 +124,8 @@ class VectorStore:
         self,
         all_vectors:  list,
         all_chunks:   list,
-        cache_source: str = None
+        cache_source: str  = None,
+        summary:      str  = ""
     ) -> None:
         if not all_vectors:
             logger.warning("[DISTRIBUTED] No vectors received. Aborted.")
@@ -149,6 +151,7 @@ class VectorStore:
 
         self.vectors   = final_vectors
         self.documents = unified_docs
+        self.summary   = summary                    # set summary BEFORE save so it gets persisted
 
         logger.info(f"[DISTRIBUTED] FAISS index built. Total vectors: {self.index.ntotal}")
 

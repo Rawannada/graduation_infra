@@ -213,7 +213,7 @@ Rules:
 - Use ONLY the provided context. Do not use outside knowledge.
 - The context includes Section Titles; use them to understand the topic better.
 - You do NOT need a formal definition sentence. If the document discusses or describes the concept anywhere, summarise what it says.
-- Always cite the page number(s), e.g. "(Page 5)".
+- MANDATORY: You MUST cite the page number from the context header for every fact you mention, e.g. "(Page 5)". Do NOT omit page citations.
 - If the question is about multiple topics, address each in its own paragraph.
 - Answer in the same language as the question.
 
@@ -236,6 +236,14 @@ Answer:"""
 
         if self._check_not_found(answer):
             return {"answer": answer, "sources": []}
+
+        # Post-process: if the LLM forgot to cite page number, append it once
+        has_page_cite = bool(re.search(r'\([Pp]age\s+\d+\)', answer))
+        if not has_page_cite and relevant_docs:
+            # Use the page of the most relevant chunk (first in list)
+            page = relevant_docs[0].get("page")
+            if page:
+                answer += f" (Page {page})"
 
         return {
             "answer":  answer,
