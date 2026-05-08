@@ -63,8 +63,6 @@ logger.info("=" * 60)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEALTH CHECK
-# BUG FIX A: manager was calling GET /health — added /health alias so both
-# GET / and GET /health work. Manager's _get_available_workers() hits GET /
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/")
 @app.get("/health")
@@ -80,7 +78,6 @@ def health_check():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SUMMARIZATION ENDPOINT — /process_summary
-# Receives PDF bytes + page range, returns partial summary string
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process_summary")
 async def process_summary_fragment(
@@ -129,16 +126,13 @@ async def process_summary_fragment(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN PROCESSING ENDPOINT — /process
-# Vectorizes + optionally summarizes assigned PDF page range.
-# BUG FIX B: old code returned no summary key from this endpoint — added it.
-# Manager's _call_worker_process_chunks reads result.get("summary", "")
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/process")
 async def process_task(
     file:      UploadFile = File(...),
     startPage: int        = Form(...),
     endPage:   int        = Form(...),
-    task_type: str        = Form("vectorize")   # 'vectorize' | 'both'
+    task_type: str        = Form("vectorize")
 ):
     logger.info("=" * 60)
     logger.info(f"[TASK] task_type={task_type} | File: {file.filename} | Pages: {startPage}→{endPage}")
@@ -164,13 +158,22 @@ async def process_task(
             return {"status": "empty", "vectors": [], "chunks": [], "summary": ""}
 
         # ── STEP 3: Split into chunks ─────────────────────────────────────────
+        # FIX: page_num from _split_into_sections reflects where the section
+        # *header* was found, which can be outside this worker's assigned range
+        # when sections span page boundaries. We clamp it to startPage so that
+        # RAG source citations always point to a page the user can actually find
+        # inside this worker's slice.
         chunked_data = []
         for section in pages_data:
+            raw_page = section.get("page_num", 0)
+            # If the section header landed before our slice (e.g. header on
+            # page 2 but we own pages 28-57), report startPage + 1 instead.
+            corrected_page = raw_page if raw_page >= startPage else startPage + 1
             for chunk_text in split_into_chunks(section["text"], max_words=100):
                 chunked_data.append({
                     "text":          chunk_text,
                     "filename":      section.get("filename", file.filename),
-                    "page_num":      section.get("page_num", 0),
+                    "page_num":      corrected_page,
                     "section_title": section.get("section_title", ""),
                 })
         logger.info(f"[TASK] Total chunks: {len(chunked_data)}")
@@ -188,7 +191,6 @@ async def process_task(
         logger.info(f"[TASK] Normalized shape: {normalized.shape}")
 
         # ── STEP 6: Summarize (optional) ─────────────────────────────────────
-        # BUG FIX B: was never generating summary here — manager expected it
         summary = ""
         if summarizer_engine and task_type in ("both", "summarize"):
             logger.info("[TASK] Generating summary...")
@@ -218,9 +220,6 @@ async def process_task(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JSON CHUNKS ENDPOINT — /process_chunks
-# BUG FIX C: manager's old code sent JSON chunks but worker had no such endpoint.
-# Added this so older manager versions still work if needed.
-# Accepts {chunks: [...]} JSON body, embeds + returns vectors.
 # ─────────────────────────────────────────────────────────────────────────────
 class ChunksRequest(BaseModel):
     chunks: List[dict]

@@ -71,17 +71,21 @@ def summarize_chunks_parallel(
             sentences = chunk.split('. ')[:8]
             short_chunk = '. '.join(sentences)[:3000]
 
-            prompt = (
-                f"You are a technical writer. Read the text below and extract:\n"
-                f"1. The MAIN TOPIC as a bold header (e.g. **Topic Name**)\n"
-                f"2. A brief explanation in 2-3 sentences maximum\n\n"
-                f"Rules:\n"
-                f"- Start directly with **Header**\n"
-                f"- No intro phrases like 'Here is' or 'This text discusses'\n"
-                f"- If multiple topics exist, use multiple headers\n"
-                f"- Be concise\n\n"
-                f"Text:\n{short_chunk}"
-            )
+            # Use the provided prompt_func if available, otherwise fall back to default
+            if prompt_func:
+                prompt = prompt_func(short_chunk)
+            else:
+                prompt = (
+                    f"You are a technical writer. Read the text below and extract:\n"
+                    f"1. The MAIN TOPIC as a bold header (e.g. **Topic Name**)\n"
+                    f"2. A brief explanation in 2-3 sentences maximum\n\n"
+                    f"Rules:\n"
+                    f"- Start directly with **Header**\n"
+                    f"- No intro phrases like 'Here is' or 'This text discusses'\n"
+                    f"- If multiple topics exist, use multiple headers\n"
+                    f"- Be concise\n\n"
+                    f"Text:\n{short_chunk}"
+                )
             summary = _fast_summarize(url, model_name, prompt, temperature, 300)
             logger.info(f"✅ Completed chunk {index + 1}/{len(text_chunks)}")
             return index, summary

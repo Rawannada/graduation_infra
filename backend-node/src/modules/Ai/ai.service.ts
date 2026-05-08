@@ -124,9 +124,10 @@ class AiService {
         });
       }
 
+      // Call AI server — it returns immediately with "processing" and builds in background
       const response = await axios.post(
         `${this.aiBaseUrl}/api/summarize`,
-        { filePath },
+        { filePath, fileId },
         {
           timeout: 600000,
           httpAgent: new http.Agent({ keepAlive: true }),
@@ -134,9 +135,67 @@ class AiService {
         },
       );
 
-      const summary = response.data.summary;
-      // const summary = "Baheb sara awiii agmal wahda fel team amora w gamela bgad yaayyyyy";
+      // If the AI server already has the summary (cached), return it directly
+      if (response.data.status === "success" && response.data.summary) {
+        const summary = response.data.summary;
 
+        const updatedFile = await this._fileModel.findOneAndUpdate(
+          { _id: fileId },
+          { summary },
+          { new: true },
+        );
+
+        return res.json({
+          message: "Summary retrieved successfully",
+          summary: updatedFile?.summary,
+          fileUrl: `${req.protocol}://${req.get("host")}/${file.path}`,
+        });
+      }
+
+      // AI server is processing in parallel — poll until done
+      if (response.data.status === "processing") {
+        const cacheKey = response.data.metadata?.cache_key || fileId;
+        const maxPolls = 120; // 120 × 5s = 10 min max wait
+        let pollCount = 0;
+
+        while (pollCount < maxPolls) {
+          await new Promise((resolve) => setTimeout(resolve, 5000)); // wait 5s
+          pollCount++;
+
+          try {
+            const pollResponse = await axios.post(
+              `${this.aiBaseUrl}/api/summarize`,
+              { filePath, fileId: cacheKey },
+              { timeout: 30000 },
+            );
+
+            if (pollResponse.data.status === "success" && pollResponse.data.summary) {
+              const summary = pollResponse.data.summary;
+
+              const updatedFile = await this._fileModel.findOneAndUpdate(
+                { _id: fileId },
+                { summary },
+                { new: true },
+              );
+
+              return res.json({
+                message: "Summary retrieved successfully",
+                summary: updatedFile?.summary,
+                fileUrl: `${req.protocol}://${req.get("host")}/${file.path}`,
+              });
+            }
+            // Still processing — continue polling
+          } catch (pollError) {
+            // Poll failed — keep trying
+            console.warn(`Poll attempt ${pollCount} failed:`, (pollError as Error).message);
+          }
+        }
+
+        throw new AppError("Summarization timed out", 504);
+      }
+
+      // Fallback for unexpected response format
+      const summary = response.data.summary || "";
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },
         { summary },
@@ -179,6 +238,7 @@ class AiService {
         {
           filePath,
           question,
+          fileId,
         },
         {
           timeout: 600000,
