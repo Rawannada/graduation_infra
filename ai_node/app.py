@@ -6,6 +6,7 @@ import warnings
 import base64
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from flask import Flask, jsonify, request
 import requests
 import plotly.express as px
@@ -21,13 +22,76 @@ warnings.filterwarnings("ignore")
 app = Flask(__name__)
 app.secret_key = "csv-insight-ai-local-final-v2"
 
-# تأكد من أن هذا المسار يطابق المجلد في جهازك
-UPLOAD_FOLDER = r"E:\graduationn-main\graduationn-main\uploads"
+# ─────────────────────────────────────────────────────────────────────────────
+# PATH CONFIGURATION
+# The AI node runs on Windows but needs to access files saved by the backend
+# which runs inside Docker on WSL. We use the WSL UNC path to bridge this.
+# ─────────────────────────────────────────────────────────────────────────────
+WSL_BASE_PATH = Path(os.getenv(
+    "WSL_BASE_PATH",
+    r"\\wsl.localhost\Ubuntu\home\rawannada\graduation_infra\backend-node"
+))
+UPLOAD_FOLDER = WSL_BASE_PATH / "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3"
+OLLAMA_URL   = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 MAX_SUGGESTIONS = 6
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATH RESOLVER
+# Resolves CSV file paths sent by the backend (running on WSL/Docker)
+# to the actual Windows-accessible path via WSL UNC.
+# ─────────────────────────────────────────────────────────────────────────────
+def _resolve_csv_path(csv_info: dict) -> Path:
+    """
+    Resolve the CSV file path from the backend request.
+
+    The backend (on WSL/Docker) saves files to uploads/{userId}/{filename}.
+    Since this AI node runs on Windows, we resolve through the WSL UNC path.
+
+    Strategy:
+      1. Use the 'path' field from backend (e.g., 'uploads/userId/filename')
+      2. Fall back to constructing from userId + fileName
+      3. Fall back to just fileName in uploads root
+    """
+    # Strategy 1: Use the 'path' field directly
+    raw_path = csv_info.get("path", "")
+    if raw_path:
+        p = Path(raw_path.replace("\\", "/"))
+        if "uploads" in p.parts:
+            idx = p.parts.index("uploads")
+            relative = Path(*p.parts[idx:])
+            resolved = WSL_BASE_PATH / relative
+            if resolved.exists():
+                return resolved
+        else:
+            resolved = UPLOAD_FOLDER / p.name
+            if resolved.exists():
+                return resolved
+
+    # Strategy 2: Construct from userId + fileName
+    filename = csv_info.get("fileName", "")
+    user_id  = csv_info.get("userId", "")
+    if filename and user_id:
+        resolved = UPLOAD_FOLDER / str(user_id) / filename
+        if resolved.exists():
+            return resolved
+
+    # Strategy 3: Just fileName in uploads root
+    if filename:
+        resolved = UPLOAD_FOLDER / filename
+        if resolved.exists():
+            return resolved
+
+    # Return best guess even if it doesn't exist (will 404 later)
+    if filename and user_id:
+        return UPLOAD_FOLDER / str(user_id) / filename
+    elif filename:
+        return UPLOAD_FOLDER / filename
+    else:
+        raise FileNotFoundError("No file path information in request")
 
 # =============================
 # 2. الأدوات التقنية (المحرك الاحترافي)
@@ -57,9 +121,9 @@ def detect_column_type(series):
 
 def load_cleaned_df(file_id):
     file_name = f"{file_id}_autoclean.csv"
-    path = os.path.join(UPLOAD_FOLDER, file_name)
-    if os.path.exists(path):
-        return pd.read_csv(path)
+    path = UPLOAD_FOLDER / file_name
+    if path.exists():
+        return pd.read_csv(str(path))
     return None
 
 # =============================
@@ -179,24 +243,26 @@ def upload():
         data = request.get_json()
         csv_info = data.get("CSV", {})
         file_id = csv_info.get("_id")
-        filename = csv_info.get("fileName")
-        
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        if not os.path.exists(file_path):
-            user_id = csv_info.get("userId", "")
-            file_path = os.path.join(UPLOAD_FOLDER, str(user_id), filename)
 
-        if not os.path.exists(file_path):
-            return jsonify({"error": "File not found at path"}), 404
+        # Resolve the CSV file path using WSL-aware path resolver
+        try:
+            file_path = _resolve_csv_path(csv_info)
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 400
+
+        if not file_path.exists():
+            return jsonify({"error": f"File not found at path: {file_path}"}), 404
+
+        logger.info(f"[UPLOAD] Resolved file path: {file_path}")
 
         try:
-            df = pd.read_csv(file_path, sep=None, engine='python', encoding='utf-8-sig')
+            df = pd.read_csv(str(file_path), sep=None, engine='python', encoding='utf-8-sig')
         except:
-            df = pd.read_csv(file_path, sep=None, engine='python', encoding='cp1252')
+            df = pd.read_csv(str(file_path), sep=None, engine='python', encoding='cp1252')
 
         df_clean = df.drop_duplicates().fillna("N/A")
-        cleaned_path = os.path.join(UPLOAD_FOLDER, f"{file_id}_autoclean.csv")
-        df_clean.to_csv(cleaned_path, index=False)
+        cleaned_path = UPLOAD_FOLDER / f"{file_id}_autoclean.csv"
+        df_clean.to_csv(str(cleaned_path), index=False)
         
         return jsonify({
             **data,
