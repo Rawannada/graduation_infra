@@ -3,6 +3,7 @@ import img from "./assets/Group9.jpg";
 import Authlayout from "./AuthLayout.jsx";
 import Authcard from "./AuthCard.jsx";
 import AuthHeader from "./AuthHeader.jsx";
+import toast from "react-hot-toast";
 
 import { Formik, useFormik } from "formik";
 import * as Yup from "yup";
@@ -12,37 +13,37 @@ import axios from "axios";
 
 
 export default function Updateprofile() {
-  async function handleContinue(values) {
-    const { fullName } = values;
+ async function handleContinue(values) {
+  const { fullName } =values;
 
-    // if (!fullName && !image) {
-    //   alert("Please provide your name or upload an image");
-    //   return;
-    // }
+  // if (!fullName && !image) {
+  //   alert("Please provide your name or upload an image");
+  //   return;
+  // }
 
-    const formData = new FormData();
-    if (fullName) formData.append("fullName", fullName);
-    // if (workspace) formData.append("workspace", workspace);
-    if (image) formData.append("image", image);
+  const formData = new FormData();
+  if (fullName) formData.append("fullName", fullName);
+  // if (workspace) formData.append("workspace", workspace);
+  if (image) formData.append("image", image);
 
-    try {
-      const token = localStorage.getItem("accessToken"); //
-      if (!accessToken) {
-        alert("You are not logged in");
-        return;
-      } // توكن من signup/confirmEmail
-      const res = await axios.post("http://cyber-service:5000/users/updateProfile", formData, {
-        headers: {
-          // "Content-Type": "multipart/form-data",
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      console.log(res.data);
-      navigate("/home"); // بعد ما ينجح
-    } catch (err) {
-      alert(err.response?.data?.message || "Update failed");
-    }
+  try {
+    const token = localStorage.getItem("accessToken"); //
+    if (!accessToken) {
+      toast.error("You are not logged in");
+      return;
+    } // توكن من signup/confirmEmail
+   const res = await axios.post("/api/users/updateProfile", formData, {
+      headers: {
+        // "Content-Type": "multipart/form-data",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+ console.log(res.data);
+    navigate("/home"); // بعد ما ينجح
+  } catch (err) {
+    toast.error(err.response?.data?.message || "Update failed");
   }
+}
 
   const [image, setImage] = useState(null);
 
@@ -50,35 +51,35 @@ export default function Updateprofile() {
   let user = {
     fullName: "",
     // workspace: "",
-
+   
   };
-
+  
   const login = useFormik({
     initialValues: user,
     onSubmit: handleContinue,
     validationSchema: Yup.object().shape({
       fullName: Yup.string().required("Name is required"),
       // workspace: Yup.string().required("Workspace is required"),
-
+      
     }),
   });
 
   return (
     <Authlayout>
-      <Authcard width="504px" height="564px" margintop="117px" marginBottom="0">
-        <input
-          type="file"
-          accept="image/*"
-          style={{ display: "none" }}
-          id="fileInput"
-          onChange={(e) => setImage(e.target.files[0])}
-        />
+   <Authcard width="504px" height="564px" margintop="117px" marginBottom="0">
+      <input
+        type="file"
+        accept="image/*"
+        style={{ display: "none" }}
+        id="fileInput"
+        onChange={(e) => setImage(e.target.files[0])}
+      />
+      
 
-
-
-        <AuthHeader
-          title="Create a workspace"
-          subtitle={<>a workspace is your place to<br />organize, create and collaborate</>} />
+      
+       <AuthHeader
+        title="Create a workspace"
+  subtitle={<>a workspace is your place to<br/>organize, create and collaborate</>}/>
         <div
           style={{
             width: "95px",
@@ -88,13 +89,13 @@ export default function Updateprofile() {
           }}
 
         >
-          {image && (
-            <img
-              src={URL.createObjectURL(image)}
-              alt="preview"
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
-          )}
+           {image && (
+    <img
+      src={URL.createObjectURL(image)}
+      alt="preview"
+      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+    />
+  )}
         </div>
         <div
           onClick={() => document.getElementById("fileInput").click()}
@@ -127,7 +128,7 @@ export default function Updateprofile() {
             value={login.values.fullName}
             onChange={login.handleChange}
             onBlur={login.handleBlur}
-            className="auth-input"
+                      className="auth-input"
 
             type="text"
             placeholder="name"
@@ -155,25 +156,25 @@ export default function Updateprofile() {
           )} */}
 
           <button
-
+           
             type="submit"
-            className="auth-button"
+                                  className="auth-button"
 
           >
             Continue
           </button>
         </form>
-
-        <p style={{ width: "588px", textAlign: "center", color: "#707070", marginTop: "10px" }}>
-          continuing as <br />
-          email22@gmail.com<br />
-          not you? sign out
-
-
+      
+       <p style={{ width: "588px", textAlign: "center", color: "#707070",marginTop:"10px" }}>
+        continuing as <br/>
+        email22@gmail.com<br/>
+        not you? sign out
 
 
-        </p>
-      </Authcard>
+
+
+      </p>
+</Authcard>
     </Authlayout>
   );
 }

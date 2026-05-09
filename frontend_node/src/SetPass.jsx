@@ -6,6 +6,7 @@ import axios from "axios";
 import { useFormik } from "formik";
 import * as Yup from "yup";
 import { useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
 
 export default function Setpass() {
   const navigate = useNavigate();
@@ -27,7 +28,7 @@ const login = useFormik({
   onSubmit: async (values) => {
     const email = localStorage.getItem("email"); // البريد المخزن من Forgot Password / OTP
     if (!email) {
-      alert("Email not found, please restart the password reset process");
+      toast.error("Email not found, please restart the password reset process");
       navigate("/forgot-password");
       return;
     }
@@ -42,11 +43,13 @@ const login = useFormik({
         }
       );
 
-      alert(response.data.message || "Password updated successfully");
-      navigate("/Passsuccess"); // صفحة نجاح تغيير الباسورد
+      toast.success(response.data.message || "Password updated successfully");
+      setTimeout(() => {
+       navigate("/Passsuccess"); 
+      }, 1500); // صفحة نجاح تغيير الباسورد
     } catch (err) {
       console.error(err);
-      alert(err.response?.data?.message || "Something went wrong. Please try again");
+      toast.error(err.response?.data?.message || "Something went wrong. Please try again");
     }
   },
 });

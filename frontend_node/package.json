@@ -10,15 +10,23 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.19.0",
+    "@tanstack/react-query": "^5.100.9",
     "axios": "^1.13.6",
     "bootstrap": "^5.3.8",
+    "file-saver": "^2.0.5",
     "formik": "^2.4.9",
+    "jszip": "^3.10.1",
     "lottie-react": "^2.4.1",
     "lucide-react": "^0.561.0",
     "pdfjs-dist": "^5.5.207",
+    "plotly.js": "^3.5.1",
+    "plotly.js-dist": "^3.5.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-hot-toast": "^2.6.0",
     "react-pdf": "^10.4.1",
+    "react-plotly.js": "^2.6.0",
     "react-router-dom": "^7.10.1",
     "react-spinners": "^0.17.0",
     "yup": "^1.7.1"

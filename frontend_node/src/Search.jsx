@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
-
+import { useNavigate } from "react-router-dom";
 export default function Search() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [recent, setRecent] = useState([]);
   const accessToken = localStorage.getItem("accessToken");
-
+const navigate = useNavigate();
   // Fetch all files once on component mount (used as "recent")
   useEffect(() => {
     async function fetchRecent() {
@@ -81,14 +81,25 @@ export default function Search() {
             const fileName = file.name || getFileName(file.url);
             return (
               <div key={file.url || index} className="recent-item">
-                <a
-                  href={file.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ textDecoration: "none", color: "black" }}
-                >
-                  {fileName}
-                </a>
+               <div
+  style={{ cursor: "pointer", color: "black" }}
+  onClick={() => {
+    const isCSV =
+      file.fileName?.endsWith(".csv") ||
+      file.type === "csv" ||
+      file.fileType === "csv";
+
+    navigate(isCSV ? "/dashboard" : "/chat", {
+      state: {
+        fileUrl: file.url,
+        fileId: file._id,
+        accessToken,
+      },
+    });
+  }}
+>
+  {fileName}
+</div>
               </div>
             );
           })

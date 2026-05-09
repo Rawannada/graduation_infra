@@ -1,44 +1,45 @@
-import { CirclePlus } from "lucide-react";
+import{ CirclePlus} from "lucide-react";
 import { useState } from "react";
+import toast from "react-hot-toast";
+
 export default function AddCategoryModal({ onClose, onSave }) {
-  const [title, setTitle] = useState("");
+   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
-  const accessToken = localStorage.getItem("accessToken");
+const accessToken = localStorage.getItem("accessToken");
   async function handleSave() {
-    if (!title.trim()) return;
+  if (!title.trim()) return;
 
-    try {
-      const res = await fetch("/api/upload/add", {
-        method: "POST",
-        headers: {
-          Authorization: `bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          categoryName: title,
-        }),
-      });
+  try {
+    const res = await fetch("/api/upload/add", {
+      method: "POST",
+      headers: {
+        Authorization: `bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        categoryName: title,
+      }),
+    });
 
-      const data = await res.json();
+    const data = await res.json();
 
-      if (!res.ok) {
-        alert(data.message); // زي: name already exists
-        return;
-      }
-
-      console.log("Category added:", data);
-
-      onSave(data); // نرجع الداتا الحقيقية
-      onClose();
-    } catch (err) {
-      console.error(err);
+    if (!res.ok) {
+toast.error(data.message || "Something went wrong");      return;
     }
+
+    console.log("Category added:", data);
+
+    onSave(data); // نرجع الداتا الحقيقية
+    onClose();
+  } catch (err) {
+    console.error(err);
   }
+}
 
   return (
     <div style={styles.overlay}>
       <div style={styles.modal}>
-
+        
         <div style={styles.header}>
           <h2>Add Category</h2>
           <button className="close-modal" onClick={onClose}>
@@ -49,11 +50,11 @@ export default function AddCategoryModal({ onClose, onSave }) {
         <div style={styles.body}>
           <label>Title</label>
           <input style={styles.input} type="text" placeholder="Cat Name" value={title}
-            onChange={(e) => setTitle(e.target.value)} />
+  onChange={(e) => setTitle(e.target.value)} />
 
           <label>Description</label>
           <input style={styles.input} type="text" placeholder="Put your description" value={desc}
-            onChange={(e) => setDesc(e.target.value)} />
+  onChange={(e) => setDesc(e.target.value)} />
         </div>
 
         <div style={styles.footer}>
@@ -80,6 +81,7 @@ const styles = {
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
+    zIndex: 1000,
   },
   modal: {
     background: "#fff",
@@ -87,12 +89,13 @@ const styles = {
     borderRadius: "16px",
     width: "484px",
     height: "320px",
+    // zIndex: 1000,
     // background:"tomato"
   },
   header: {
-    height: "56px",
+   height: "56px",
     // background:"tomato",
-    color: "#113567",
+    color:"#113567",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -121,13 +124,13 @@ const styles = {
     cursor: "pointer",
   },
   save: {
-
+   
     color: "#113567",
     border: "none",
     padding: "8px 16px",
     borderRadius: "16px",
     cursor: "pointer",
-    background: "transparent",
-
+    background:"transparent",
+    
   },
 };

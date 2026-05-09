@@ -8,10 +8,11 @@ import {
   PanelLeft,
   ArrowUp,
   Plus,
-  Brain, CheckCircle, Sparkle
+    Brain, CheckCircle , Sparkle
 } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { ClipLoader } from "react-spinners";
+import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 
 export default function Chat() {
   const [fileOpen, setFileOpen] = useState(true); // true يعني الملف ظاهر
@@ -27,12 +28,14 @@ export default function Chat() {
   const [message, setMessage] = useState("");
   const [summary, setSummary] = useState(null);
   const [loadingStep, setLoadingStep] = useState("");
-  const [thinkingStep, setThinkingStep] = useState("");
+const [thinkingStep, setThinkingStep] = useState("");
   const location = useLocation();
   const [summaryError, setSummaryError] = useState(false);
   const { fileUrl, fileId } = location.state || {};
   const accessToken = location.state?.accessToken || "";
-
+const [fileName, setFileName] = useState("");
+const [currentFileUrl, setCurrentFileUrl] = useState("");
+const [currentFileName, setCurrentFileName] = useState("");
   //summarize
   const handleSummarize = async () => {
     if (!fileId) return;
@@ -51,11 +54,15 @@ export default function Chat() {
         throw new Error("Server error");
       }
       const data = await res.json();
-
+      console.log("Summary response:", data);
+      setFileName(data.fileName || "Unnamed File");
+      // await new Promise((r) => setTimeout(r, 3000));
       // السيرفر ممكن يرد بأي اسم مفتاح
       const sum = data.summary;
 
       setSummary(sum || "No summary available.");
+      setCurrentFileUrl(data.fileUrl || "");
+      setCurrentFileName(data.fileName || "Unnamed File");
       setMessage(data.message || "");
     } catch (err) {
       console.error(err);
@@ -66,57 +73,57 @@ export default function Chat() {
   };
 
   // ask question
-  async function sendQuestion() {
-    if (!question.trim()) return;
+async function sendQuestion() {
+  if (!question.trim()) return;
 
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+  setMessages((prev) => [...prev, { role: "user", content: question }]);
 
-    const currentQuestion = question;
-    setQuestion("");
+  const currentQuestion = question;
+  setQuestion("");
 
-    setLoading(true);
+  setLoading(true);
 
-    try {
-      // ثابتة
-      setLoadingStep("Reading the file");
+  try {
+    // ثابتة
+    setLoadingStep("Reading the file");
 
-      await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, 700));
 
-      // المتغيرة
-      setThinkingStep("Thinking...");
+    // المتغيرة
+    setThinkingStep("Thinking...");
 
-      const res = await fetch(`/api/ai/ask/${fileId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ question: currentQuestion }),
-      });
+    const res = await fetch(`/api/ai/ask/${fileId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ question: currentQuestion }),
+    });
 
-      const data = await res.json();
+    const data = await res.json();
 
-      // التحويل هنا
-      setThinkingStep("Finished thinking...");
+    // التحويل هنا
+    setThinkingStep("Finished thinking...");
 
-      await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500));
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.answer || "No answer found" },
-      ]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: data.answer || "No answer found" },
+    ]);
 
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Error retrieving answer" },
-      ]);
-    } finally {
-      setLoading(false);
-      setLoadingStep("");
-      setThinkingStep("");
-    }
+  } catch (err) {
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: "Error retrieving answer" },
+    ]);
+  } finally {
+    setLoading(false);
+    setLoadingStep("");
+    setThinkingStep("");
   }
+}
   // async function sendQuestion() {
   //   if (!question.trim()) return;
 
@@ -168,6 +175,8 @@ export default function Chat() {
         throw new Error("Server error");
       }
       const data = await res.json();
+         
+
       if (data.chats) {
         const history = data.chats.flatMap((c) => [
           { role: "user", content: c.question },
@@ -194,13 +203,13 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  if (loadingSummary) {
-    return (
-      <div className="full-loader">
-        <ClipLoader size={50} />
-      </div>
-    );
-  }
+  // if (loadingSummary) {
+  //   return (
+  //     <div className="full-loader">
+  //       <ClipLoader size={50} />
+  //     </div>
+  //   );
+  // }
 
   if (summaryError) {
     return (
@@ -211,6 +220,7 @@ export default function Chat() {
   }
   return (
     <div className="chat">
+      
       <input
         type="file"
         hidden
@@ -243,14 +253,20 @@ export default function Chat() {
       />
       <div className="title">
         <PanelLeft size={20} />
-        <span>file name</span>
+        <span>{fileName}</span>
         <div className="closefile" onClick={() => setFileOpen((prev) => !prev)}>
           {" "}
           {fileOpen ? <PanelLeft size={20} /> : <PanelRight size={20} />}
         </div>
       </div>
-
-      <div className="chatlayout">
+{loadingSummary ? (
+  <div className="loader-container">
+    <div className="spinner"></div>
+    <p className="loading-text">Generating summary...</p>
+  </div>
+) : (
+  <div className="chatlayout">
+        
         {" "}
         <div className="chat-container  ">
           <div className="messages">
@@ -282,31 +298,31 @@ export default function Chat() {
                   )}
               </div>
             ))}
-            {loading && (
-              <div className="message assistant loading-box">
+         {loading && (
+  <div className="message assistant loading-box">
+    
+    <div className="step">
+      <FileText size={16} />
+      <span>{loadingStep}</span>
+    </div>
 
-                <div className="step">
-                  <FileText size={16} />
-                  <span>{loadingStep}</span>
-                </div>
+    <div className="step">
+      {thinkingStep === "Finished thinking..." ? (
+        < Sparkle size={20} />
+      ) : (
+        <Brain size={16} />
+      )}
+      <span>{thinkingStep}</span>
+    </div>
 
-                <div className="step">
-                  {thinkingStep === "Finished thinking..." ? (
-                    < Sparkle size={20} />
-                  ) : (
-                    <Brain size={16} />
-                  )}
-                  <span>{thinkingStep}</span>
-                </div>
-
-              </div>
-            )}
+  </div>
+)}
             <div ref={messagesEndRef} />
           </div>
           <div className="textbox">
             <div className="title">
               <FileText size={20} />
-              <span>file name</span>
+              <span>{fileName}</span>
             </div>
 
             <div className="inputbox d-flex align-items-center justify-content-between">
@@ -365,22 +381,25 @@ export default function Chat() {
                 <ChevronRight size={17} />
               </button>
             </div> */}
-            <div className="showfile">
-              {fileUrl ? (
-                <iframe
-                  src={fileUrl}
-                  width="100%"
-                  height="100%"
-                  style={{ border: "none", background: "green" }}
-                />
-              ) : (
-                <span>No file loaded</span>
-              )}
-              <div className="filename"></div>
-            </div>
+          <div className="showfile">
+  {currentFileUrl ? (
+    <iframe
+      src={currentFileUrl}
+      width="100%"
+      height="100%"
+      style={{ border: "none" }}
+    />
+  ) : (
+    <span>No file loaded</span>
+  )}
+
+  
+</div>
           </div>
         )}
-      </div>
+      </div>)}
+
+     
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Toaster } from "react-hot-toast";
 import { FileProvider } from "./FileContext.jsx";
 import "./Categories.css"
 import "./App.css";
@@ -6,6 +7,7 @@ import Search from "./Search.jsx";
 import Chat from "./Chat.jsx";
 import Layout from "./Layout";
 import SideBar from "./SideBar.jsx";
+import Dashboard from "./Dashboard";
 import { createBrowserRouter } from "react-router-dom";
 import { RouterProvider } from "react-router";
 import Home from "./Home.jsx";
@@ -24,6 +26,7 @@ import { Navigate } from "react-router-dom";
 import { DragTextProvider } from "./DragTextContext";
 import ProtectedRoute from "./ProtectedRoute";
 import AuthProvider from "./AuthContext";
+import CSVColumns from "./CSVColumns";
 
 const router = createBrowserRouter([
   {
@@ -83,6 +86,8 @@ const router = createBrowserRouter([
       { path: "/category-files/:categoryId/:categoryName", element: <CategoryFiles /> },
       { path: "/search", element: <Search /> },
       { path: "/Chat", element: <Chat /> },
+      {path:"/CSVColumns" ,element:<CSVColumns/>},
+      {path:"/Dashboard" ,element:<Dashboard/>}
     ],
   },
 ]);
@@ -93,6 +98,7 @@ function App() {
 
       <DragTextProvider>
         <FileProvider>
+            <Toaster position="top-center" />
           <RouterProvider router={router} />
         </FileProvider>
       </DragTextProvider>

@@ -7,6 +7,8 @@ import { Formik, useFormik } from "formik";
 import * as Yup from "yup";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import toast from "react-hot-toast";
+
 export default function Forgotpass() {
   const navigate = useNavigate();
   let user = {
@@ -27,12 +29,11 @@ export default function Forgotpass() {
     });
     localStorage.setItem("email", values.email);
     if (response.data.message) {
-      alert(response.data.message); // OTP Sent to email
-      navigate("/PassCode"); // redirect لصفحة تغيير الباسورد
+toast.success(response.data.message);     setTimeout(() => navigate("/PassCode"), 1500); // redirect لصفحة تغيير الباسورد
     }
   } catch (error) {
     console.error(error);
-    alert(
+    toast.error (
       error.response?.data?.message || "Something went wrong. Please try again."
     );
   }

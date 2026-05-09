@@ -6,9 +6,10 @@ import AuthHeader from "./AuthHeader.jsx";
 import { useNavigate } from "react-router-dom";
 import { useRef, useState } from "react";
 import axios from "axios";
+import toast from "react-hot-toast";
 
 export default function Code() {
-
+  
   const navigate = useNavigate();
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const inputsRef = useRef([]);
@@ -17,19 +18,21 @@ export default function Code() {
     const OTP = otp.join(""); // نجمع الستة أرقام مع بعض
 
     if (OTP.length < 6) {
-      alert("Please enter complete OTP");
-      return;
+toast.error("Please enter complete OTP");      return;
     }
 
     try {
-      const response = await axios.patch("/users/confirmEmail", {
+     const response= await axios.patch("/api/users/confirmEmail", {
         email,
         OTP,
       });
-      navigate("/login");
+toast.success("Email verified successfully! 🎉", {
+  duration: 1500,
+});
+
+     setTimeout(() => navigate("/login"), 1800);
     } catch (err) {
-      alert(err.response?.data?.message || "Invalid OTP");
-    }
+toast.error(err.response?.data?.message || "Invalid OTP");    }
   }
   const handleChange = (value, index) => {
     if (!/^\d?$/.test(value)) return;
@@ -51,9 +54,9 @@ export default function Code() {
 
   return (
     <Authlayout>
+    
 
-
-      <Authcard width="498px" height="345px" marginBottom="77px">
+      <Authcard  width="498px" height="345px" marginBottom="77px">
         <AuthHeader
           title="we emailed you a code"
           subtitle={`check your inbox at ${localStorage.getItem("email")}`}
@@ -111,7 +114,7 @@ export default function Code() {
           >
             <button
               onClick={() => window.open("https://mail.google.com", "_blank")}
-              className="mini-btn"
+                            className="mini-btn"
 
             >
               open gmail
@@ -126,15 +129,15 @@ export default function Code() {
         </form>
       </Authcard>
       <p style={{ width: "588px", textAlign: "center", color: "#707070" }}>
-        continuing as <br />
-        email22@gmail.com<br />
+        continuing as <br/>
+        email22@gmail.com<br/>
         log in with another email here
 
 
 
 
       </p>
-
+    
     </Authlayout>
   );
 }

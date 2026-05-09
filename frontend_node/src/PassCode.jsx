@@ -6,6 +6,7 @@ import AuthHeader from "./AuthHeader.jsx";
 import { useNavigate } from "react-router-dom";
 import { useRef, useState } from "react";
 import axios from "axios";
+import toast from "react-hot-toast";
 
 export default function Code() {
   
@@ -17,8 +18,7 @@ export default function Code() {
     const OTP = otp.join(""); // نجمع الستة أرقام مع بعض
 
     if (OTP.length < 6) {
-      alert("Please enter complete OTP");
-      return;
+toast.error("Please enter the full OTP code");      return;
     }
 
     try {
@@ -26,9 +26,12 @@ export default function Code() {
         email,
         OTP,
       });
-      navigate("/Set");
+toast.success("Email verified successfully! 🎉", {
+  duration: 1500,
+});
+     setTimeout(() => navigate("/Set"), 1800);
     } catch (err) {
-      alert(err.response?.data?.message || "Invalid OTP");
+      toast.error(err.response?.data?.message || "Invalid OTP");
     }
   }
   const handleChange = (value, index) => {

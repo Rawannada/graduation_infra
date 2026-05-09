@@ -279,7 +279,10 @@ class UploadService {
 
     if (!userId) throw new AppError("User Not Found", 404);
 
-    const category = await this._categoryModel.findOne({ categoryName });
+    const category = await this._categoryModel.findOne({
+      userId,
+      categoryName,
+    });
     if (category)
       return res
         .status(200)
