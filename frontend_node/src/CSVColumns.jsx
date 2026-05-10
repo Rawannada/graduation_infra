@@ -2,12 +2,12 @@ import React, { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 
-import line_img from "../src/assets/charts/line.SVG";
-import scatter_img from "../src/assets/charts/scatter.SVG";
-import heat_img from "../src/assets/newphotos/heat.SVG";
-import histo_img from "../src/assets/charts/histo.SVG";
-import bar_img from "../src/assets/newphotos/bar.SVG";
-import pie_img from "../src/assets/newphotos/pie.SVG";
+import line_img from "../src/assets/charts/line.svg";
+import scatter_img from "../src/assets/charts/scatter.svg";
+import heat_img from "../src/assets/newphotos/heat.svg";
+import histo_img from "../src/assets/charts/histo.svg";
+import bar_img from "../src/assets/newphotos/bar.svg";
+import pie_img from "../src/assets/newphotos/pie.svg";
 
 import { PanelLeft, Check } from "lucide-react";
 export default function CSVColumns() {
@@ -150,9 +150,8 @@ export default function CSVColumns() {
             <div
               key={chart.id}
               style={{
-                border: `2px solid ${
-                  chartTypeColors[chart.chartType?.toLowerCase()] || "#ddd"
-                }`,
+                border: `2px solid ${chartTypeColors[chart.chartType?.toLowerCase()] || "#ddd"
+                  }`,
               }}
               className="option"
             >

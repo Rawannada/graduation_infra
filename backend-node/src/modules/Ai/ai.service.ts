@@ -126,7 +126,6 @@ class AiService {
         });
       }
 
-      // Call AI server — it returns immediately with "processing" and builds in background
       const response = await axios.post(
         `${this.aiBaseUrl}/api/summarize`,
         { filePath, fileId },
@@ -137,7 +136,6 @@ class AiService {
         },
       );
 
-      // If the AI server already has the summary (cached), return it directly
       if (response.data.status === "success" && response.data.summary) {
         const summary = response.data.summary;
 
@@ -155,14 +153,13 @@ class AiService {
         });
       }
 
-      // AI server is processing in parallel — poll until done
       if (response.data.status === "processing") {
         const cacheKey = response.data.metadata?.cache_key || fileId;
-        const maxPolls = 120; // 120 × 5s = 10 min max wait
+        const maxPolls = 120;
         let pollCount = 0;
 
         while (pollCount < maxPolls) {
-          await new Promise((resolve) => setTimeout(resolve, 5000)); // wait 5s
+          await new Promise((resolve) => setTimeout(resolve, 5000));
           pollCount++;
 
           try {
@@ -172,7 +169,10 @@ class AiService {
               { timeout: 30000 },
             );
 
-            if (pollResponse.data.status === "success" && pollResponse.data.summary) {
+            if (
+              pollResponse.data.status === "success" &&
+              pollResponse.data.summary
+            ) {
               const summary = pollResponse.data.summary;
 
               const updatedFile = await this._fileModel.findOneAndUpdate(
@@ -185,19 +185,20 @@ class AiService {
                 message: "Summary retrieved successfully",
                 summary: updatedFile?.summary,
                 fileUrl: `${req.protocol}://${req.get("host")}/${file.path}`,
+                fileName: file.fileName.replace(/^\d+-/, ""),
               });
             }
-            // Still processing — continue polling
           } catch (pollError) {
-            // Poll failed — keep trying
-            console.warn(`Poll attempt ${pollCount} failed:`, (pollError as Error).message);
+            console.warn(
+              `Poll attempt ${pollCount} failed:`,
+              (pollError as Error).message,
+            );
           }
         }
 
         throw new AppError("Summarization timed out", 504);
       }
 
-      // Fallback for unexpected response format
       const summary = response.data.summary || "";
       const updatedFile = await this._fileModel.findOneAndUpdate(
         { _id: fileId },
@@ -209,6 +210,7 @@ class AiService {
         message: "Summary retrieved successfully",
         summary: updatedFile?.summary,
         fileUrl: `${req.protocol}://${req.get("host")}/${file.path}`,
+        fileName: file.fileName.replace(/^\d+-/, ""),
       });
     } catch (error) {
       next(error);
@@ -267,13 +269,13 @@ class AiService {
         question,
         answer,
         sources,
-        fileName: file.fileName.replace(/^\d+-/, ""),
       });
 
       return res.json({
         message: "Answer retrieved successfully",
         answer,
         sources,
+        fileName: file.fileName.replace(/^\d+-/, ""),
       });
     } catch (error: any) {
       if (error instanceof Error && "errors" in error) {
@@ -387,16 +389,6 @@ class AiService {
     file.charts = transformedCharts;
     await file.save();
 
-    const updatedSelectedCharts = file.charts
-      ?.filter((chart) => selectedCharts.includes(chart.id))
-      .map((chart) => ({
-        id: chart.id,
-        title: chart.title,
-        chartType: chart.chartType,
-        mapping: chart.mapping,
-        fig: chart.fig,
-      }));
-
     return res.status(200).json({
       message: "Charts suggested successfully",
       charts: transformedCharts,
@@ -450,8 +442,28 @@ class AiService {
     // const aiCharts = [
     //   {
     //     success: true,
-    //     fig: { },
     //     title: "Sales by Category",
+    //     fig: {
+    //       data: [
+    //         {
+    //           type: "bar",
+    //           x: ["Electronics", "Clothing", "Groceries", "Books"],
+    //           y: [1200, 800, 1500, 400],
+    //           marker: {
+    //             color: "#636EFA",
+    //           },
+    //         },
+    //       ],
+    //       layout: {
+    //         title: "Sales by Category",
+    //         xaxis: {
+    //           title: "Category",
+    //         },
+    //         yaxis: {
+    //           title: "Sales",
+    //         },
+    //       },
+    //     },
     //   },
     // ];
 
@@ -476,11 +488,22 @@ class AiService {
 
     await file.save();
 
+    const updatedSelectedCharts = file.charts
+      ?.filter((chart) => selectedCharts.includes(chart.id))
+      .map((chart) => ({
+        id: chart.id,
+        title: chart.title,
+        chartType: chart.chartType,
+        mapping: chart.mapping,
+        fig: chart.fig,
+      }));
+
     return res.status(200).json({
       message: "Charts rendered successfully",
       charts: updatedSelectedCharts,
     });
   };
+
   getCharts = async (req: Request, res: Response, next: NextFunction) => {
     const userId = req?.user?._id;
     const { fileId } = req.params;
