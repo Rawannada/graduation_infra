@@ -6,7 +6,7 @@ export function useCategories(accessToken) {
   useEffect(() => {
     async function fetchCategories() {
       try {
-        const res = await fetch("http://localhost:3000/upload/categories", {
+        const res = await fetch("/api/upload/categories", {
           headers: { Authorization: `bearer ${accessToken}` },
         });
         const data = await res.json();

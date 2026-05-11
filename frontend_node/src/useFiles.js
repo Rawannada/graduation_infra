@@ -5,7 +5,7 @@ const GENERAL_CATEGORY_ID = "69e65b0b17c6dbad8a7757b1";
 export function useFiles({ accessToken, setRecentFiles, setGeneralFiles }) {
   const fetchRecent = useCallback(async () => {
     try {
-      const res = await fetch("http://localhost:3000/upload/recent", {
+      const res = await fetch("/api/upload/recent", {
         headers: { Authorization: `bearer ${accessToken}` },
       });
       const data = await res.json();
@@ -18,7 +18,7 @@ export function useFiles({ accessToken, setRecentFiles, setGeneralFiles }) {
   const fetchGeneralFiles = useCallback(async () => {
     try {
       const res = await fetch(
-        `http://localhost:3000/upload/files/${GENERAL_CATEGORY_ID}`,
+        `/api/upload/files/${GENERAL_CATEGORY_ID}`,
         {
           headers: { Authorization: `bearer ${accessToken}` },
         }
