@@ -18,6 +18,25 @@ export default function CSVColumns() {
   const [charts, setCharts] = useState([]);
   const [selectedCharts, setSelectedCharts] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  // ---------------- FETCH CHART OPTIONS ----------------
+  useEffect(() => {
+    if (fileId) {
+      getChartOptions();
+    }
+  }, [fileId]);
+
+  // If no fileId (e.g., page refresh lost navigation state), redirect back
+  if (!fileId) {
+    return (
+      <div style={{ padding: "2rem", textAlign: "center" }}>
+        <p>No file selected. Please go back and upload a CSV file first.</p>
+        <button onClick={() => navigate("/")} style={{ padding: "8px 16px", cursor: "pointer" }}>
+          Go Back
+        </button>
+      </div>
+    );
+  }
   const chartImages = {
     line: line_img,
     scatter: scatter_img,
@@ -34,12 +53,6 @@ export default function CSVColumns() {
     pie: "#4A5699",
     heatmap: "#DBA020",
   };
-  // ---------------- FETCH CHART OPTIONS ----------------
-  useEffect(() => {
-    if (fileId) {
-      getChartOptions();
-    }
-  }, [fileId]);
 
   async function getChartOptions() {
     setLoading(true);

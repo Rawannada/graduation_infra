@@ -61,7 +61,7 @@ export default function CSVScanBox({ fetchRecent, fetchGeneralFiles }) {
       }
 
       setCsvFiles([{ _id: uploaded._id, name: file.name, originalFile: file }]);
-     
+
       updateDragText("csv", "CSV selected for scanning");
     } catch (err) {
       console.error(err);
@@ -120,14 +120,17 @@ export default function CSVScanBox({ fetchRecent, fetchGeneralFiles }) {
         setScanned(true);
         setReport(data.updatedFile);
         updateDragText("csv", "Scan completed");
-        setLoading(false);
         await fetchRecent();
         await fetchGeneralFiles();
         window.dispatchEvent(new Event("general-update"));
+      } else {
+        updateDragText("csv", "Scan failed");
       }
     } catch (err) {
       console.error("Scan Error:", err);
+      updateDragText("csv", "Scan error");
     }
+    setLoading(false);
   }
 
   const handleCancel = (e) => {
@@ -310,7 +313,7 @@ export default function CSVScanBox({ fetchRecent, fetchGeneralFiles }) {
                 <button
                   className="another-scan-btn"
                   onClick={() => {
-                    handleCancel({ stopPropagation: () => {} });
+                    handleCancel({ stopPropagation: () => { } });
                     inputRef.current.click();
                   }}
                 >

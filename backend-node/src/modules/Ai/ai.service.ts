@@ -424,51 +424,58 @@ class AiService {
       throw new AppError("No valid charts selected", 400);
     }
 
-    const response = await axios.post(
-      `${this.aiBaseUrlCsv}/render`,
-      {
-        file_id: fileId,
-        charts: chartsToSend.map((c) => ({
-          type: c.chartType,
-          x: c.mapping?.x?.column ?? null,
-          y: c.mapping?.y?.column ?? null,
-        })),
-      },
-      { timeout: 600000 },
-    );
+    const renderPayload = {
+      file_id: fileId,
+      charts: chartsToSend.map((c) => ({
+        type: c.chartType,
+        title: c.title,
+        x: c.mapping?.x?.column ?? null,
+        y: c.mapping?.y?.column ?? null,
+      })),
+    };
+    let response;
+    try {
+      // Use responseType: 'text' to always get raw string, then sanitize NaN/Infinity
+      // before parsing ourselves (Flask/Plotly sometimes outputs NaN which is invalid JSON)
+      response = await axios.post(
+        `${this.aiBaseUrlCsv}/render`,
+        renderPayload,
+        { timeout: 600000, responseType: 'text' },
+      );
+    } catch (axiosErr: any) {
+      console.error('❌ Flask /render error:', axiosErr.message, axiosErr.response?.data);
+      throw new AppError(
+        axiosErr.response?.data?.error || `AI render service error: ${axiosErr.message}`,
+        axiosErr.response?.status || 500
+      );
+    }
 
-    const aiCharts = response.data.charts;
+    // Ensure response.data is parsed as an object (not a raw string)
+    // Flask/Plotly sometimes outputs NaN/Infinity which are invalid JSON,
+    // so we sanitize before parsing.
+    let responseData = response.data;
+    if (typeof responseData === 'string') {
+      // Replace Python NaN/Infinity/-Infinity with null (valid JSON)
+      const sanitized = responseData
+        .replace(/:\s*NaN/g, ': null')
+        .replace(/:\s*Infinity/g, ': null')
+        .replace(/:\s*-Infinity/g, ': null')
+        .replace(/\bNaN\b/g, 'null')
+        .replace(/\bInfinity\b/g, 'null')
+        .replace(/\b-Infinity\b/g, 'null');
+      try {
+        responseData = JSON.parse(sanitized);
+      } catch (parseErr) {
+        console.error('❌ Failed to parse Flask response as JSON:', parseErr);
+        throw new AppError('AI render service returned invalid JSON', 500);
+      }
+    }
 
-    // const aiCharts = [
-    //   {
-    //     success: true,
-    //     title: "Sales by Category",
-    //     fig: {
-    //       data: [
-    //         {
-    //           type: "bar",
-    //           x: ["Electronics", "Clothing", "Groceries", "Books"],
-    //           y: [1200, 800, 1500, 400],
-    //           marker: {
-    //             color: "#636EFA",
-    //           },
-    //         },
-    //       ],
-    //       layout: {
-    //         title: "Sales by Category",
-    //         xaxis: {
-    //           title: "Category",
-    //         },
-    //         yaxis: {
-    //           title: "Sales",
-    //         },
-    //       },
-    //     },
-    //   },
-    // ];
+    const aiCharts = responseData.charts;
 
     if (!aiCharts || !Array.isArray(aiCharts)) {
-      throw new AppError("Invalid AI response", 500);
+      console.error('❌ Invalid AI response! responseData type:', typeof responseData, '| charts type:', typeof aiCharts);
+      throw new AppError(`Invalid AI response: charts is ${typeof aiCharts}`, 500);
     }
 
     const figMap = new Map(aiCharts.map((c: any) => [c.title, c]));
@@ -519,14 +526,16 @@ class AiService {
 
     if (!file) throw new AppError("File Not Exist", 400);
 
-    const charts = file.charts.map((chart) => ({
-      id: chart.id,
-      title: chart.title,
-      hasFigure: !!chart.fig,
-      fig: chart.fig || null,
-      mapping: chart.mapping || null,
-      chartType: chart.chartType,
-    }));
+    const charts = file.charts
+      .filter((chart) => chart.fig)
+      .map((chart) => ({
+        id: chart.id,
+        title: chart.title,
+        hasFigure: true,
+        fig: chart.fig,
+        mapping: chart.mapping || null,
+        chartType: chart.chartType,
+      }));
 
     return res.status(200).json({ message: "success", charts });
   };
